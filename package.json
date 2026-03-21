@@ -1,0 +1,53 @@
+{
+  "name": "arr-cli",
+  "version": "1.0.0",
+  "description": "Single-file bash CLI for the *arr media stack — Sonarr, Radarr, Prowlarr, qBittorrent, Bazarr, Jellyseerr, Tdarr, and more.",
+  "bin": {
+    "arr-cli": "media",
+    "media": "media"
+  },
+  "scripts": {
+    "test": "bash media help"
+  },
+  "files": [
+    "media",
+    "config.example",
+    "install.sh",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "sonarr",
+    "radarr",
+    "prowlarr",
+    "qbittorrent",
+    "bazarr",
+    "jellyseerr",
+    "tdarr",
+    "arr",
+    "media-server",
+    "cli",
+    "plex",
+    "jellyfin",
+    "usenet",
+    "torrent",
+    "media-management"
+  ],
+  "author": "Solomon Neas <me@solomonneas.dev>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/solomonneas/media-cli.git"
+  },
+  "bugs": {
+    "url": "https://github.com/solomonneas/media-cli/issues"
+  },
+  "homepage": "https://github.com/solomonneas/media-cli#readme",
+  "engines": {
+    "node": ">=16"
+  },
+  "os": [
+    "linux",
+    "darwin"
+  ]
+}
