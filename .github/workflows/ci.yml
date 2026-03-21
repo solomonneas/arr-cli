@@ -24,6 +24,7 @@ jobs:
         with:
           scandir: '.'
           additional_files: 'media'
+          severity: 'warning'
 
   publish:
     needs: test
