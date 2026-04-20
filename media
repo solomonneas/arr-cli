@@ -753,19 +753,37 @@ cmd_qbit() {
             local action="${1:-on}"
             case "$action" in
                 on|enable)
-                    local extras="${QBIT_HARDEN_EXTRAS:-}"
-                    local names="$QBIT_HARDEN_DEFAULT"
-                    [ -n "$extras" ] && names="$names $extras"
-                    # qBittorrent's setPreferences requires excluded_file_names to be
-                    # newline-separated (not space-separated); space-separated is treated
-                    # as a single literal pattern and silently matches nothing.
-                    # Emit literal `\n` sequences in JSON so the parser yields real
-                    # newlines when qB reads the value.
-                    local names_json="${names// /\\n}"
-                    local json="{\"excluded_file_names_enabled\":true,\"excluded_file_names\":\"${names_json}\"}"
+                    # Read existing excluded_file_names and merge OUR patterns in — do not
+                    # clobber user-configured exclusions. qBittorrent wants the list
+                    # newline-separated; using python's json.dumps handles escaping.
+                    local prefs
+                    prefs=$(_qbit "app/preferences") || { echo "❌ Could not read qBittorrent preferences"; return 1; }
+                    local json
+                    json=$(echo "$prefs" | QB_DEFAULTS="$QBIT_HARDEN_DEFAULT" QB_EXTRAS="${QBIT_HARDEN_EXTRAS:-}" python3 -c "
+import sys, os, json
+prefs = json.load(sys.stdin)
+existing = [x.strip() for x in (prefs.get('excluded_file_names','') or '').split('\n') if x.strip()]
+ours = os.environ['QB_DEFAULTS'].split() + os.environ['QB_EXTRAS'].split()
+# Preserve user patterns first, append ours, de-dupe while keeping order.
+merged = list(dict.fromkeys(existing + ours))
+print(json.dumps({
+    'excluded_file_names_enabled': True,
+    'excluded_file_names': '\n'.join(merged),
+}))
+") || { echo "❌ Failed to build preferences payload"; return 1; }
+                    local added
+                    added=$(echo "$prefs" | QB_DEFAULTS="$QBIT_HARDEN_DEFAULT" QB_EXTRAS="${QBIT_HARDEN_EXTRAS:-}" python3 -c "
+import sys, os, json
+prefs = json.load(sys.stdin)
+existing = set(x.strip() for x in (prefs.get('excluded_file_names','') or '').split('\n') if x.strip())
+ours = os.environ['QB_DEFAULTS'].split() + os.environ['QB_EXTRAS'].split()
+new = [p for p in ours if p not in existing]
+print(' '.join(new) if new else '(already present)')
+")
                     if _qbit_set_pref "$json" >/dev/null; then
                         echo "✅ qBittorrent malware hardening enabled"
-                        echo "   Blocked extensions: $names"
+                        echo "   Added: $added"
+                        echo "   Existing user exclusions preserved."
                         echo ""
                         echo "   Note: this is layer 2 of 3. For full protection on Windows hosts:"
                         echo "   - Defender scan on downloads dir (Set-MpPreference)"
@@ -777,24 +795,54 @@ cmd_qbit() {
                     fi
                     ;;
                 off|disable)
-                    local json='{"excluded_file_names_enabled":false,"excluded_file_names":""}'
+                    # Remove ONLY our patterns; leave user-added exclusions in place.
+                    local prefs
+                    prefs=$(_qbit "app/preferences") || { echo "❌ Could not read qBittorrent preferences"; return 1; }
+                    local json
+                    json=$(echo "$prefs" | QB_DEFAULTS="$QBIT_HARDEN_DEFAULT" QB_EXTRAS="${QBIT_HARDEN_EXTRAS:-}" python3 -c "
+import sys, os, json
+prefs = json.load(sys.stdin)
+existing = [x.strip() for x in (prefs.get('excluded_file_names','') or '').split('\n') if x.strip()]
+ours = set(os.environ['QB_DEFAULTS'].split() + os.environ['QB_EXTRAS'].split())
+remaining = [x for x in existing if x not in ours]
+# Disable the toggle entirely only if nothing user-authored is left.
+print(json.dumps({
+    'excluded_file_names_enabled': bool(remaining),
+    'excluded_file_names': '\n'.join(remaining),
+}))
+") || { echo "❌ Failed to build preferences payload"; return 1; }
                     if _qbit_set_pref "$json" >/dev/null; then
-                        echo "⚠️  qBittorrent malware hardening DISABLED"
-                        echo "   All file extensions will be allowed to extract."
+                        local remaining_count
+                        remaining_count=$(echo "$json" | python3 -c "import sys,json; n=json.load(sys.stdin)['excluded_file_names']; print(len([x for x in n.split('\n') if x.strip()]))")
+                        echo "⚠️  qBittorrent malware hardening DISABLED (our patterns removed)"
+                        if [ "$remaining_count" -gt 0 ]; then
+                            echo "   $remaining_count user-configured exclusion(s) preserved."
+                        else
+                            echo "   No other exclusions configured; feature toggle turned off."
+                        fi
                     else
                         echo "❌ Failed to update qBittorrent preferences"
                         return 1
                     fi
                     ;;
                 status)
-                    _qbit "app/preferences" | python3 -c "
-import sys, json
+                    _qbit "app/preferences" | QB_DEFAULTS="$QBIT_HARDEN_DEFAULT" QB_EXTRAS="${QBIT_HARDEN_EXTRAS:-}" python3 -c "
+import sys, os, json
 p = json.load(sys.stdin)
 enabled = p.get('excluded_file_names_enabled', False)
-names   = p.get('excluded_file_names', '') or '(none)'
-state = '✅ ENABLED' if enabled else '❌ DISABLED'
+patterns = [x.strip() for x in (p.get('excluded_file_names','') or '').split('\n') if x.strip()]
+ours = set(os.environ['QB_DEFAULTS'].split() + os.environ['QB_EXTRAS'].split())
+hardening_active = enabled and ours.issubset(set(patterns))
+state = '✅ ENABLED' if hardening_active else '❌ DISABLED'
 print(f'Malware hardening: {state}')
-print(f'Blocked: {names}')
+print(f'Toggle: excluded_file_names_enabled={enabled}')
+print(f'Total patterns: {len(patterns)}')
+ours_present = [p for p in patterns if p in ours]
+user_present = [p for p in patterns if p not in ours]
+if ours_present:
+    print(f'  Our patterns ({len(ours_present)}): {\" \".join(ours_present)}')
+if user_present:
+    print(f'  User patterns ({len(user_present)}): {\" \".join(user_present)}')
 " 2>/dev/null || { echo "❌ Could not read qBittorrent preferences"; return 1; }
                     ;;
                 *)
