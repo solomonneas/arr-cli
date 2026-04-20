@@ -812,10 +812,10 @@ print(json.dumps({
 }))
 ") || { echo "❌ Failed to build preferences payload"; return 1; }
                     if _qbit_set_pref "$json" >/dev/null; then
-                        local remaining_count
-                        remaining_count=$(echo "$json" | python3 -c "import sys,json; n=json.load(sys.stdin)['excluded_file_names']; print(len([x for x in n.split('\n') if x.strip()]))")
+                        local remaining_count=0
+                        remaining_count=$(echo "$json" | python3 -c "import sys,json; n=json.load(sys.stdin)['excluded_file_names']; print(len([x for x in n.split('\n') if x.strip()]))" 2>/dev/null) || remaining_count=0
                         echo "⚠️  qBittorrent malware hardening DISABLED (our patterns removed)"
-                        if [ "$remaining_count" -gt 0 ]; then
+                        if [ "${remaining_count:-0}" -gt 0 ]; then
                             echo "   $remaining_count user-configured exclusion(s) preserved."
                         else
                             echo "   No other exclusions configured; feature toggle turned off."
