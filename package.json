@@ -37,12 +37,12 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/solomonneas/media-cli.git"
+    "url": "git+https://github.com/solomonneas/arr-cli.git"
   },
   "bugs": {
-    "url": "https://github.com/solomonneas/media-cli/issues"
+    "url": "https://github.com/solomonneas/arr-cli/issues"
   },
-  "homepage": "https://github.com/solomonneas/media-cli#readme",
+  "homepage": "https://github.com/solomonneas/arr-cli#readme",
   "engines": {
     "node": ">=16"
   },

@@ -1,5 +1,5 @@
 <p align="center">
-  <h1 align="center">📺 media-cli</h1>
+  <h1 align="center">🏴‍☠️ arr-cli</h1>
   <p align="center">
     One script to manage your entire *arr media stack from the terminal.
     <br />
@@ -17,11 +17,13 @@
 
 ---
 
-**media-cli** is a single bash script that wraps the APIs of your entire media automation stack into simple, memorable commands. No Docker, no Node, no Python packages. Just `curl`, `python3` (for JSON parsing), and your existing *arr setup.
+**arr-cli** is a single bash script that wraps the APIs of your entire media automation stack into simple, memorable commands. No Docker, no Node, no Python packages. Just `curl`, `python3` (for JSON parsing), and your existing *arr setup.
 
 Built for humans who manage media servers from the terminal, and for AI agents that do it on their behalf.
 
-**Playback server?** media-cli handles acquisition (Sonarr/Radarr/qBittorrent). For controlling Jellyfin itself — playback sessions, library scans, user management, scheduled tasks — see [**jellyfin-mcp**](https://github.com/solomonneas/jellyfin-mcp), the companion MCP server.
+**Playback server?** arr-cli handles acquisition (Sonarr/Radarr/qBittorrent). For controlling Jellyfin itself — playback sessions, library scans, user management, scheduled tasks — see [**jellyfin-mcp**](https://github.com/solomonneas/jellyfin-mcp), the companion MCP server.
+
+> Formerly `media-cli`. The binary is still named `media` (also installed as `arr-cli`), and the config path stays at `~/.config/media-cli/` for back-compat.
 
 ```bash
 $ media movies search "Interstellar"
@@ -59,14 +61,14 @@ $ media downloads active
 **One-liner:**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/solomonneas/media-cli/main/media -o ~/bin/media && chmod +x ~/bin/media
+curl -fsSL https://raw.githubusercontent.com/solomonneas/arr-cli/main/media -o ~/bin/media && chmod +x ~/bin/media
 ```
 
 **Or clone:**
 
 ```bash
-git clone https://github.com/solomonneas/media-cli.git
-cd media-cli
+git clone https://github.com/solomonneas/arr-cli.git
+cd arr-cli
 bash install.sh
 ```
 
@@ -223,7 +225,7 @@ This is the killer feature for headless servers. Your services don't need to be 
 
 This CLI was built alongside [OpenClaw](https://openclaw.ai), an AI agent platform. The commands are designed to be easily parsed by AI assistants.
 
-Any AI agent or automation tool that can run shell commands can use media-cli:
+Any AI agent or automation tool that can run shell commands can use arr-cli:
 
 **Natural language to commands:**
 
@@ -253,7 +255,7 @@ Works with OpenClaw, LangChain tool calling, Claude computer use, or any agent f
 
 ```
 ┌──────────────┐     ┌─────────────────────────┐
-│  media-cli   │────▶│  SSH (optional)          │
+│   arr-cli   │────▶│  SSH (optional)          │
 │  (your box)  │     │  curl commands run on    │
 └──────────────┘     │  the media server        │
                      └───────────┬─────────────┘
@@ -289,7 +291,7 @@ Works with OpenClaw, LangChain tool calling, Claude computer use, or any agent f
 
 Poisoned `*arr` releases are a real thing. In April 2026 the maintainer's Gandalf server caught LummaStealer-class payloads delivered as fake video-named `.exe` / `.scr` files inside releases for popular shows. Legit video releases do not contain executables.
 
-media-cli ships a one-command hardening layer that sets qBittorrent's global `excluded_file_names` preference so these files never hit disk:
+arr-cli ships a one-command hardening layer that sets qBittorrent's global `excluded_file_names` preference so these files never hit disk:
 
 ```bash
 media qbit harden on        # Enabled by default after `media setup`
@@ -315,7 +317,7 @@ QBIT_HARDEN_EXTRAS="*.exe *.bat" media qbit harden on
 1. **Windows Defender exclusions + real-time scanning on your downloads directory.** Don't disable Defender for your whole drive; just exclude the specific legit-but-false-positive paths you know about.
 2. **qB autorun hook that deletes executables in media-category torrents only.** qBittorrent can run a command "on torrent completed" — point it at a script that walks the completed torrent and deletes any executables if the category is your Sonarr/Radarr category. That way manual downloads in other categories aren't touched.
 
-media-cli doesn't automate these two — they're host-OS-specific and the right paths/categories depend on your setup. The CLI handles the one layer that's cleanly API-addressable across platforms (qBittorrent's own preference).
+arr-cli doesn't automate these two — they're host-OS-specific and the right paths/categories depend on your setup. The CLI handles the one layer that's cleanly API-addressable across platforms (qBittorrent's own preference).
 
 **Disabling:** `media qbit harden off` is a single round-trip API call that clears `excluded_file_names` and sets `excluded_file_names_enabled=false`. Does not touch anything else.
 
