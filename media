@@ -106,9 +106,14 @@ _post_json() {
     if [[ "${MEDIA_HOST:-local}" == ssh:* ]]; then
         local host="${MEDIA_HOST#ssh:}"
         if [ "${MEDIA_HOST_OS:-linux}" = "windows" ]; then
+            # Use Invoke-WebRequest (not Invoke-RestMethod) so we get the raw
+            # response body back. Invoke-RestMethod | ConvertTo-Json wraps
+            # JSON arrays in {"value":[...]} because PowerShell deserializes
+            # them to PSObject arrays first, which broke any array-returning
+            # endpoint (Tdarr's cruddb/NodeJSONDB in particular).
             local b64
             b64=$(echo -n "$body" | base64 -w0)
-            ssh "$host" "powershell -Command \"Invoke-RestMethod -Uri '$url' -Method Post -ContentType 'application/json' -Body ([System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('$b64'))) -TimeoutSec $timeout | ConvertTo-Json -Depth 10 -Compress\"" 2>/dev/null
+            ssh "$host" "powershell -Command \"(Invoke-WebRequest -Uri '$url' -Method Post -ContentType 'application/json' -Body ([System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('$b64'))) -TimeoutSec $timeout -UseBasicParsing).Content\"" 2>/dev/null
         else
             ssh "$host" "echo '$body' | curl -sf --max-time $timeout -X POST -H 'Content-Type: application/json' --data-binary @- '$url'" 2>/dev/null
         fi
@@ -1057,14 +1062,24 @@ cmd_tdarr() {
         local endpoint="$1"; local body="$2"
         _post_json "${tdarr_url}/api/v2/$endpoint" "$body" 15
     }
-    # Discover the first node ID — works for single-node setups (most people)
+    # Tdarr v2.63 removed GET /api/v2/get-nodes. Node config now lives in
+    # NodeJSONDB; read it via POST /api/v2/cruddb.
+    _tdarr_nodes_json() {
+        _tdarr_post_json "cruddb" '{"data":{"collection":"NodeJSONDB","mode":"getAll"}}'
+    }
+    # Discover the first node ID — works for single-node setups (most people).
     _tdarr_first_node() {
-        _tdarr_get "get-nodes" | python3 -c "
+        _tdarr_nodes_json | python3 -c "
 import sys, json
-d = json.load(sys.stdin)
-for nid, node in d.items():
-    if isinstance(node, dict) and 'workers' in node:
-        print(nid); break
+try:
+    nodes = json.load(sys.stdin)
+except Exception:
+    sys.exit(1)
+if not isinstance(nodes, list):
+    sys.exit(1)
+for node in nodes:
+    if isinstance(node, dict) and node.get('_id'):
+        print(node['_id']); break
 " 2>/dev/null
     }
 
@@ -1146,16 +1161,22 @@ if act: print(f'  Status: {act}')
                     fi
                     ;;
                 status|"")
-                    _tdarr_get "get-nodes" | python3 -c "
+                    _tdarr_nodes_json | python3 -c "
 import sys, json
-d = json.load(sys.stdin)
-for nid, node in d.items():
-    if not isinstance(node, dict) or 'workers' not in node: continue
-    wl = node.get('workerLimits', {})
+try:
+    nodes = json.load(sys.stdin)
+except Exception:
+    print('❌ Could not read Tdarr nodes'); sys.exit(1)
+for node in nodes if isinstance(nodes, list) else []:
+    if not isinstance(node, dict): continue
+    nid = node.get('_id', '?')
+    wl = node.get('workerLimits', {}) or {}
     sched = node.get('scheduleEnabled', False)
     mode = '🚀 BOOST (schedule off)' if not sched else '⏰ SCHEDULED'
-    print(f\"Node: {node.get('nodeName', nid)}  [{mode}]\")
+    name = node.get('nodeName') or nid
+    print(f'Node: {name}  [{mode}]')
     print(f\"  GPU workers: {wl.get('transcodegpu','?')}  CPU workers: {wl.get('transcodecpu','?')}\")
+    print(f\"  Health GPU:  {wl.get('healthcheckgpu','?')}  Health CPU:  {wl.get('healthcheckcpu','?')}\")
 " 2>/dev/null
                     ;;
                 *) echo "Usage: media tdarr boost [on|off|status]"; return 1 ;;
@@ -1200,37 +1221,36 @@ for nid, node in d.items():
                 return 0
             fi
 
-            echo "=== Tdarr Workers ==="
-            _tdarr_get "get-nodes" | python3 -c "
-import sys,json
-d = json.load(sys.stdin)
-total = 0; active = 0
-for nid, node in d.items():
-    if not isinstance(node, dict) or 'workers' not in node: continue
-    workers = node.get('workers', {})
-    node_total = len(workers)
-    node_active = sum(1 for w in workers.values() if isinstance(w,dict) and not w.get('idle',True))
-    total += node_total; active += node_active
-    print(f'Node: {node.get(\"nodeName\", nid)}  ({node_active}/{node_total} workers active)')
-    for wid, w in workers.items():
-        if not isinstance(w, dict): continue
-        wtype = w.get('workerType','?')
-        if w.get('idle', True):
-            print(f'  ⏸️  {wid} [{wtype}] idle')
-        else:
-            pct = w.get('percentage', 0)
-            orig = w.get('originalfileSizeInGbytes', 0)
-            out  = w.get('outputFileSizeInGbytes', 0)
-            file = w.get('file','?')
-            fname = file.replace('\\\\','/').split('/')[-1][:65] if isinstance(file,str) else '?'
-            eta  = w.get('ETA','?')
-            fps  = w.get('fps','')
-            fps_str = f' @ {fps}fps' if fps else ''
-            reduction = round((1 - out/orig)*100, 1) if orig > 0 and out > 0 else 0
-            print(f'  ⚙️  {wid} [{wtype}] {pct:.1f}%{fps_str}')
-            print(f'     {fname}')
-            print(f'     {orig:.2f}GB -> {out:.2f}GB ({reduction:.1f}% smaller) ETA: {eta}')
-print(f'\nTotal: {active} active / {total} workers')
+            # Tdarr v2.63+ dropped the HTTP endpoint that returned live
+            # per-worker progress; that stream is socket.io-only now. We can
+            # still show configured limits + schedule state from NodeJSONDB,
+            # which is what you need to answer 'is boost on, and what are
+            # the limits?'. For live file-level progress, open the Tdarr UI.
+            echo "=== Tdarr Workers (configured) ==="
+            _tdarr_nodes_json | python3 -c "
+import sys, json
+try:
+    nodes = json.load(sys.stdin)
+except Exception:
+    print('❌ Could not read Tdarr nodes'); sys.exit(1)
+for node in nodes if isinstance(nodes, list) else []:
+    if not isinstance(node, dict): continue
+    nid = node.get('_id', '?')
+    name = node.get('nodeName') or nid
+    wl = node.get('workerLimits', {}) or {}
+    sched = node.get('scheduleEnabled', False)
+    paused = node.get('nodePaused', False)
+    flags = []
+    flags.append('BOOST' if not sched else 'SCHEDULED')
+    if paused: flags.append('PAUSED')
+    print(f\"Node: {name}  [{' / '.join(flags)}]\")
+    print(f\"  transcode GPU:     {wl.get('transcodegpu','?')}\")
+    print(f\"  transcode CPU:     {wl.get('transcodecpu','?')}\")
+    print(f\"  healthcheck GPU:   {wl.get('healthcheckgpu','?')}\")
+    print(f\"  healthcheck CPU:   {wl.get('healthcheckcpu','?')}\")
+print()
+print('Live per-file progress (fps, %, ETA) requires the Tdarr UI — the HTTP')
+print('endpoint for that was removed in Tdarr v2.63.')
 " 2>/dev/null
             ;;
 
