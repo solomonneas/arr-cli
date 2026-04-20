@@ -94,6 +94,29 @@ _jellyseerr() {
     _curl "${JELLYSEERR_URL}/api/v1/$endpoint" "-H \"X-Api-Key: $JELLYSEERR_KEY\"" "$@"
 }
 
+# Generic POST helper: sends a JSON body to $url with no auth header.
+# Handles the local / SSH-Linux / SSH-Windows split so callers don't reinvent it.
+# Tried before: piping via `ssh host 'curl --data-binary @-' <<< body` — silently
+# fails on Windows SSH because stdin isn't forwarded cleanly to curl through
+# cmd.exe. Base64-then-PowerShell mirrors the existing _curl_post pattern.
+_post_json() {
+    local url="$1"
+    local body="$2"
+    local timeout="${3:-15}"
+    if [[ "${MEDIA_HOST:-local}" == ssh:* ]]; then
+        local host="${MEDIA_HOST#ssh:}"
+        if [ "${MEDIA_HOST_OS:-linux}" = "windows" ]; then
+            local b64
+            b64=$(echo -n "$body" | base64 -w0)
+            ssh "$host" "powershell -Command \"Invoke-RestMethod -Uri '$url' -Method Post -ContentType 'application/json' -Body ([System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('$b64'))) -TimeoutSec $timeout | ConvertTo-Json -Depth 10 -Compress\"" 2>/dev/null
+        else
+            ssh "$host" "echo '$body' | curl -sf --max-time $timeout -X POST -H 'Content-Type: application/json' --data-binary @- '$url'" 2>/dev/null
+        fi
+    else
+        echo -n "$body" | curl -sf --max-time "$timeout" -X POST -H "Content-Type: application/json" --data-binary @- "$url" 2>/dev/null
+    fi
+}
+
 # FlareSolverr — Cloudflare challenge-solving proxy used by Prowlarr.
 # GET / returns a ready message; POST /v1 takes JSON commands.
 _flaresolverr_get() {
@@ -101,13 +124,7 @@ _flaresolverr_get() {
 }
 
 _flaresolverr_post() {
-    local body="$1"
-    if [[ "${MEDIA_HOST:-local}" == ssh:* ]]; then
-        local host="${MEDIA_HOST#ssh:}"
-        ssh "$host" "curl -sf --max-time 90 -X POST -H 'Content-Type: application/json' --data-binary @- '${FLARESOLVERR_URL}/v1'" <<< "$body" 2>/dev/null
-    else
-        curl -sf --max-time 90 -X POST -H "Content-Type: application/json" --data-binary @- "${FLARESOLVERR_URL}/v1" <<< "$body" 2>/dev/null
-    fi
+    _post_json "${FLARESOLVERR_URL}/v1" "$1" 90
 }
 
 _qbit_login() {
@@ -1033,15 +1050,12 @@ cmd_tdarr() {
             curl -sf --max-time 15 -X POST -H "Content-Type: application/json" -d "{}" "${tdarr_url}/api/v2/$1" 2>/dev/null
         fi
     }
-    # POST with arbitrary JSON body via stdin (avoids quoting hell over SSH)
+    # POST with arbitrary JSON body. Delegates to _post_json so Windows SSH
+    # hosts get the PowerShell Invoke-RestMethod path (curl stdin over SSH
+    # silently drops the body on Windows).
     _tdarr_post_json() {
         local endpoint="$1"; local body="$2"
-        if [[ "${MEDIA_HOST:-local}" == ssh:* ]]; then
-            local host="${MEDIA_HOST#ssh:}"
-            ssh "$host" "curl -sf --max-time 15 -X POST -H 'Content-Type: application/json' --data-binary @- '${tdarr_url}/api/v2/$endpoint'" <<< "$body" 2>/dev/null
-        else
-            curl -sf --max-time 15 -X POST -H "Content-Type: application/json" --data-binary @- "${tdarr_url}/api/v2/$endpoint" <<< "$body" 2>/dev/null
-        fi
+        _post_json "${tdarr_url}/api/v2/$endpoint" "$body" 15
     }
     # Discover the first node ID — works for single-node setups (most people)
     _tdarr_first_node() {
