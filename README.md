@@ -1,29 +1,37 @@
 <p align="center">
   <h1 align="center">🏴‍☠️ arr-cli</h1>
   <p align="center">
-    One script to manage your entire *arr media stack from the terminal.
+    Plunder your *arr media stack from the terminal. One bash script, no runtime, works locally or over SSH.
     <br />
-    <strong>Sonarr / Radarr / Prowlarr / qBittorrent / Bazarr / Jellyseerr</strong>
+    <strong>Sonarr · Radarr · Prowlarr · qBittorrent · Bazarr · Jellyseerr · Tdarr</strong>
   </p>
+</p>
+
+<p align="center">
+  <a href="https://github.com/solomonneas/arr-cli/actions/workflows/ci.yml"><img src="https://github.com/solomonneas/arr-cli/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://www.npmjs.com/package/arr-cli"><img src="https://img.shields.io/npm/v/arr-cli.svg" alt="npm"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT License"></a>
+  <img src="https://img.shields.io/badge/shell-bash-green.svg" alt="Bash">
 </p>
 
 <p align="center">
   <a href="#install">Install</a> •
   <a href="#quick-start">Quick Start</a> •
   <a href="#commands">Commands</a> •
+  <a href="#malware-hardening">Hardening</a> •
   <a href="#ai-agent-integration">AI Agents</a> •
   <a href="#connection-modes">Remote/SSH</a>
 </p>
 
 ---
 
-**arr-cli** is a single bash script that wraps the APIs of your entire media automation stack into simple, memorable commands. No Docker, no Node, no Python packages. Just `curl`, `python3` (for JSON parsing), and your existing *arr setup.
+**arr-cli** is a single bash script that wraps the APIs of your entire media automation stack into simple, memorable commands. No Docker, no Node, no Python packages. Just `curl`, `python3` (stdlib only), and your existing *arr setup.
 
 Built for humans who manage media servers from the terminal, and for AI agents that do it on their behalf.
 
-**Playback server?** arr-cli handles acquisition (Sonarr/Radarr/qBittorrent). For controlling Jellyfin itself — playback sessions, library scans, user management, scheduled tasks — see [**jellyfin-mcp**](https://github.com/solomonneas/jellyfin-mcp), the companion MCP server.
+**Playback server?** arr-cli handles acquisition (Sonarr/Radarr/qBittorrent/Tdarr). For controlling Jellyfin itself — playback sessions, library scans, user management, scheduled tasks — see [**jellyfin-mcp**](https://github.com/solomonneas/jellyfin-mcp), the companion MCP server.
 
-> Formerly `media-cli`. The binary is still named `media` (also installed as `arr-cli`), and the config path stays at `~/.config/media-cli/` for back-compat.
+> Formerly `media-cli`. Old GitHub URL still redirects. The binary is still named `media` (also installed as `arr-cli`), and the config path stays at `~/.config/media-cli/` for back-compat.
 
 ```bash
 $ media movies search "Interstellar"
@@ -58,13 +66,21 @@ $ media downloads active
 
 ## Install
 
-**One-liner:**
+**npm (recommended):**
+
+```bash
+npm install -g arr-cli
+```
+
+Exposes both `arr-cli` and `media` on your `PATH`.
+
+**One-liner (no npm):**
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/solomonneas/arr-cli/main/media -o ~/bin/media && chmod +x ~/bin/media
 ```
 
-**Or clone:**
+**Clone:**
 
 ```bash
 git clone https://github.com/solomonneas/arr-cli.git
@@ -72,7 +88,7 @@ cd arr-cli
 bash install.sh
 ```
 
-Make sure `~/bin` is in your `PATH` (add `export PATH="$HOME/bin:$PATH"` to your shell profile if needed).
+Make sure `~/bin` (or whichever dir you installed to) is in your `PATH`.
 
 ## Quick Start
 
@@ -319,7 +335,7 @@ QBIT_HARDEN_EXTRAS="*.exe *.bat" media qbit harden on
 
 arr-cli doesn't automate these two — they're host-OS-specific and the right paths/categories depend on your setup. The CLI handles the one layer that's cleanly API-addressable across platforms (qBittorrent's own preference).
 
-**Disabling:** `media qbit harden off` is a single round-trip API call that clears `excluded_file_names` and sets `excluded_file_names_enabled=false`. Does not touch anything else.
+**Preserves your existing exclusions.** `harden on` merges our patterns into whatever `excluded_file_names` list qBittorrent already has; your custom exclusions survive. `harden off` removes *only* our patterns, leaving yours intact. The feature toggle flips off only if nothing user-authored remains.
 
 ## License
 
