@@ -756,8 +756,13 @@ cmd_qbit() {
                     local extras="${QBIT_HARDEN_EXTRAS:-}"
                     local names="$QBIT_HARDEN_DEFAULT"
                     [ -n "$extras" ] && names="$names $extras"
-                    # qB expects newline-separated in the WebUI; space-separated works via API
-                    local json="{\"excluded_file_names_enabled\":true,\"excluded_file_names\":\"${names}\"}"
+                    # qBittorrent's setPreferences requires excluded_file_names to be
+                    # newline-separated (not space-separated); space-separated is treated
+                    # as a single literal pattern and silently matches nothing.
+                    # Emit literal `\n` sequences in JSON so the parser yields real
+                    # newlines when qB reads the value.
+                    local names_json="${names// /\\n}"
+                    local json="{\"excluded_file_names_enabled\":true,\"excluded_file_names\":\"${names_json}\"}"
                     if _qbit_set_pref "$json" >/dev/null; then
                         echo "✅ qBittorrent malware hardening enabled"
                         echo "   Blocked extensions: $names"

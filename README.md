@@ -21,6 +21,8 @@
 
 Built for humans who manage media servers from the terminal, and for AI agents that do it on their behalf.
 
+**Playback server?** media-cli handles acquisition (Sonarr/Radarr/qBittorrent). For controlling Jellyfin itself — playback sessions, library scans, user management, scheduled tasks — see [**jellyfin-mcp**](https://github.com/solomonneas/jellyfin-mcp), the companion MCP server.
+
 ```bash
 $ media movies search "Interstellar"
  [157336] Interstellar (2014) 169min
@@ -297,7 +299,7 @@ media qbit harden status    # Inspect current state
 
 **Blocked by default:**
 
-```
+```text
 *.scr *.pif *.vbs *.wsf *.hta *.lnk *.jar *.com *.msi
 *.js *.jse *.vbe *.ps1 *.psm1 *.reg *.dll
 ```
