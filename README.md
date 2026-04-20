@@ -1,4 +1,8 @@
 <p align="center">
+  <img src="assets/pirate.svg" alt="arr-cli treasure chest" width="180" />
+</p>
+
+<p align="center">
   <h1 align="center">🏴‍☠️ arr-cli</h1>
   <p align="center">
     Plunder your *arr media stack from the terminal. One bash script, no runtime, works locally or over SSH.

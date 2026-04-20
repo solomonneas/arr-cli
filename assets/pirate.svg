@@ -1,0 +1,115 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 220" width="200" height="220" role="img" aria-label="arr-cli treasure chest">
+  <defs>
+    <linearGradient id="chestBody" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#b45309"/>
+      <stop offset="60%" stop-color="#854d0e"/>
+      <stop offset="100%" stop-color="#451a03"/>
+    </linearGradient>
+    <linearGradient id="chestLid" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#d97706"/>
+      <stop offset="100%" stop-color="#78350f"/>
+    </linearGradient>
+    <linearGradient id="gold" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#fde68a"/>
+      <stop offset="60%" stop-color="#f59e0b"/>
+      <stop offset="100%" stop-color="#b45309"/>
+    </linearGradient>
+    <linearGradient id="metal" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#eab308"/>
+      <stop offset="100%" stop-color="#854d0e"/>
+    </linearGradient>
+    <radialGradient id="sparkle" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.9"/>
+      <stop offset="100%" stop-color="#ffffff" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <!-- back coins spilling -->
+  <g fill="url(#gold)" stroke="#78350f" stroke-width="1">
+    <ellipse cx="38" cy="186" rx="12" ry="4"/>
+    <ellipse cx="162" cy="186" rx="12" ry="4"/>
+    <ellipse cx="56" cy="194" rx="10" ry="3.5"/>
+    <ellipse cx="148" cy="194" rx="10" ry="3.5"/>
+    <ellipse cx="100" cy="200" rx="14" ry="4.5"/>
+  </g>
+
+  <!-- chest body -->
+  <path d="M 28 112 L 172 112 L 168 196 Q 168 204 160 204 L 40 204 Q 32 204 32 196 Z"
+        fill="url(#chestBody)"/>
+
+  <!-- chest front planks -->
+  <g stroke="#451a03" stroke-width="1.4" opacity="0.6">
+    <line x1="68" y1="116" x2="66" y2="200"/>
+    <line x1="100" y1="116" x2="100" y2="200"/>
+    <line x1="132" y1="116" x2="134" y2="200"/>
+  </g>
+
+  <!-- chest lid (open, tilted back) -->
+  <path d="M 24 110 Q 100 52 176 110 L 172 118 L 28 118 Z"
+        fill="url(#chestLid)"/>
+
+  <!-- lid underside shadow -->
+  <path d="M 28 118 L 172 118 L 168 124 L 32 124 Z" fill="#1c1917" opacity="0.45"/>
+
+  <!-- lid planks -->
+  <g stroke="#451a03" stroke-width="1.2" fill="none" opacity="0.55">
+    <path d="M 68 72 Q 68 92 66 118"/>
+    <path d="M 100 62 L 100 118"/>
+    <path d="M 132 72 Q 132 92 134 118"/>
+  </g>
+
+  <!-- metal bands -->
+  <g fill="url(#metal)" stroke="#78350f" stroke-width="0.8">
+    <rect x="28" y="140" width="144" height="8" rx="1"/>
+    <rect x="28" y="180" width="144" height="8" rx="1"/>
+  </g>
+
+  <!-- metal studs -->
+  <g fill="#fde68a" stroke="#78350f" stroke-width="0.6">
+    <circle cx="40" cy="144" r="2"/>
+    <circle cx="100" cy="144" r="2"/>
+    <circle cx="160" cy="144" r="2"/>
+    <circle cx="40" cy="184" r="2"/>
+    <circle cx="100" cy="184" r="2"/>
+    <circle cx="160" cy="184" r="2"/>
+  </g>
+
+  <!-- lock plate -->
+  <rect x="90" y="154" width="20" height="24" rx="2" fill="url(#metal)" stroke="#78350f" stroke-width="0.8"/>
+  <circle cx="100" cy="164" r="2.5" fill="#1c1917"/>
+  <rect x="99" y="166" width="2" height="7" fill="#1c1917"/>
+
+  <!-- gold coins pile (front, in chest mouth) -->
+  <g fill="url(#gold)" stroke="#78350f" stroke-width="1">
+    <ellipse cx="60" cy="128" rx="9" ry="3.5"/>
+    <ellipse cx="76" cy="126" rx="8" ry="3"/>
+    <ellipse cx="92" cy="128" rx="9" ry="3.5"/>
+    <ellipse cx="110" cy="126" rx="8" ry="3"/>
+    <ellipse cx="128" cy="128" rx="9" ry="3.5"/>
+    <ellipse cx="144" cy="126" rx="8" ry="3"/>
+    <ellipse cx="72" cy="122" rx="7" ry="2.8"/>
+    <ellipse cx="104" cy="120" rx="7" ry="2.8"/>
+    <ellipse cx="136" cy="122" rx="7" ry="2.8"/>
+    <ellipse cx="88" cy="116" rx="6" ry="2.4"/>
+    <ellipse cx="120" cy="116" rx="6" ry="2.4"/>
+  </g>
+
+  <!-- jewels on top of pile -->
+  <g>
+    <polygon points="80,110 85,114 83,120 77,120 75,114" fill="#ef4444" stroke="#7f1d1d" stroke-width="0.8"/>
+    <polygon points="114,108 120,112 118,118 110,118 108,112" fill="#10b981" stroke="#064e3b" stroke-width="0.8"/>
+    <polygon points="98,104 102,107 101,112 95,112 94,107" fill="#3b82f6" stroke="#1e3a8a" stroke-width="0.8"/>
+  </g>
+
+  <!-- sparkles -->
+  <g fill="url(#sparkle)">
+    <circle cx="100" cy="86" r="6"/>
+    <circle cx="56" cy="98" r="4"/>
+    <circle cx="148" cy="96" r="4"/>
+  </g>
+  <g fill="#ffffff" opacity="0.95">
+    <path d="M 100 82 L 101 86 L 105 87 L 101 88 L 100 92 L 99 88 L 95 87 L 99 86 Z"/>
+    <path d="M 56 94 L 56.6 97 L 59.5 97.5 L 56.6 98 L 56 101 L 55.4 98 L 52.5 97.5 L 55.4 97 Z"/>
+    <path d="M 148 92 L 148.6 95 L 151.5 95.5 L 148.6 96 L 148 99 L 147.4 96 L 144.5 95.5 L 147.4 95 Z"/>
+  </g>
+</svg>
