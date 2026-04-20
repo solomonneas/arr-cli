@@ -118,6 +118,19 @@ _qbit() {
     fi
 }
 
+# Set a qBittorrent preference via setPreferences. Takes a JSON object string.
+# qB expects form-encoded body: json={"key":"value",...}
+_qbit_set_pref() {
+    local json_body="$1"
+    local sid; sid=$(_qbit_login)
+    if [[ "${MEDIA_HOST:-local}" == ssh:* ]]; then
+        local host="${MEDIA_HOST#ssh:}"
+        ssh "$host" "curl -sf --max-time 15 -b 'SID=$sid' --data-urlencode 'json=$json_body' '$QBIT_URL/api/v2/app/setPreferences'" 2>/dev/null
+    else
+        curl -sf --max-time 15 -b "SID=$sid" --data-urlencode "json=$json_body" "$QBIT_URL/api/v2/app/setPreferences" 2>/dev/null
+    fi
+}
+
 # ── Setup ───────────────────────────────────────────────────────────────────
 
 cmd_setup() {
@@ -217,6 +230,25 @@ CONF
     chmod 600 "$CONFIG_FILE"
     echo ""
     echo "✅ Config saved to $CONFIG_FILE"
+    echo ""
+
+    # qBittorrent malware hardening (enabled by default; prompt lets user opt out)
+    echo "── qBittorrent malware hardening ──"
+    echo "Blocks common malware extensions (.scr .vbs .hta .js .dll etc.) from"
+    echo "extracting out of torrents. Originally motivated by poisoned video"
+    echo "releases that shipped LummaStealer payloads as fake .exe / .scr files."
+    echo "Does NOT block .exe/.bat (non-media torrents may legitimately use them)."
+    echo ""
+    read -rp "Enable now? [Y/n]: " harden_choice
+    if [[ ! "$harden_choice" =~ ^[Nn] ]]; then
+        # shellcheck source=/dev/null
+        source "$CONFIG_FILE"
+        cmd_qbit harden on || echo "   (You can run 'media qbit harden on' later.)"
+    else
+        echo "   Skipped. Run 'media qbit harden on' anytime to enable."
+    fi
+
+    echo ""
     echo "   Run 'media status' to test your connection."
 }
 
@@ -698,18 +730,179 @@ for u in json.load(sys.stdin).get('results',[]):
     esac
 }
 
+### qBittorrent malware hardening ###
+# Sets qB's global `excluded_file_names` preference to block common malware
+# extensions from extracting to disk. Originally motivated by LummaStealer-class
+# payloads distributed in poisoned video releases (fake .exe / .scr files named
+# to look like the episode/movie).
+#
+# Default block list deliberately omits .exe and .bat — some users keep those
+# for legit non-media downloads. Add them yourself if you're media-only:
+#   QBIT_HARDEN_EXTRAS="*.exe *.bat" media qbit harden on
+#
+# To disable:  media qbit harden off
+# To inspect: media qbit harden status
+
+QBIT_HARDEN_DEFAULT="*.scr *.pif *.vbs *.wsf *.hta *.lnk *.jar *.com *.msi *.js *.jse *.vbe *.ps1 *.psm1 *.reg *.dll"
+
+cmd_qbit() {
+    local subcmd="${1:-}"; shift 2>/dev/null || true
+
+    case "$subcmd" in
+        harden)
+            local action="${1:-on}"
+            case "$action" in
+                on|enable)
+                    # Read existing excluded_file_names and merge OUR patterns in — do not
+                    # clobber user-configured exclusions. qBittorrent wants the list
+                    # newline-separated; using python's json.dumps handles escaping.
+                    local prefs
+                    prefs=$(_qbit "app/preferences") || { echo "❌ Could not read qBittorrent preferences"; return 1; }
+                    local json
+                    json=$(echo "$prefs" | QB_DEFAULTS="$QBIT_HARDEN_DEFAULT" QB_EXTRAS="${QBIT_HARDEN_EXTRAS:-}" python3 -c "
+import sys, os, json
+prefs = json.load(sys.stdin)
+existing = [x.strip() for x in (prefs.get('excluded_file_names','') or '').split('\n') if x.strip()]
+ours = os.environ['QB_DEFAULTS'].split() + os.environ['QB_EXTRAS'].split()
+# Preserve user patterns first, append ours, de-dupe while keeping order.
+merged = list(dict.fromkeys(existing + ours))
+print(json.dumps({
+    'excluded_file_names_enabled': True,
+    'excluded_file_names': '\n'.join(merged),
+}))
+") || { echo "❌ Failed to build preferences payload"; return 1; }
+                    local added
+                    added=$(echo "$prefs" | QB_DEFAULTS="$QBIT_HARDEN_DEFAULT" QB_EXTRAS="${QBIT_HARDEN_EXTRAS:-}" python3 -c "
+import sys, os, json
+prefs = json.load(sys.stdin)
+existing = set(x.strip() for x in (prefs.get('excluded_file_names','') or '').split('\n') if x.strip())
+ours = os.environ['QB_DEFAULTS'].split() + os.environ['QB_EXTRAS'].split()
+new = [p for p in ours if p not in existing]
+print(' '.join(new) if new else '(already present)')
+")
+                    if _qbit_set_pref "$json" >/dev/null; then
+                        echo "✅ qBittorrent malware hardening enabled"
+                        echo "   Added: $added"
+                        echo "   Existing user exclusions preserved."
+                        echo ""
+                        echo "   Note: this is layer 2 of 3. For full protection on Windows hosts:"
+                        echo "   - Defender scan on downloads dir (Set-MpPreference)"
+                        echo "   - qB autorun hook to delete executables in media categories"
+                        echo "   See: https://github.com/solomonneas/media-cli#malware-hardening"
+                    else
+                        echo "❌ Failed to update qBittorrent preferences"
+                        return 1
+                    fi
+                    ;;
+                off|disable)
+                    # Remove ONLY our patterns; leave user-added exclusions in place.
+                    local prefs
+                    prefs=$(_qbit "app/preferences") || { echo "❌ Could not read qBittorrent preferences"; return 1; }
+                    local json
+                    json=$(echo "$prefs" | QB_DEFAULTS="$QBIT_HARDEN_DEFAULT" QB_EXTRAS="${QBIT_HARDEN_EXTRAS:-}" python3 -c "
+import sys, os, json
+prefs = json.load(sys.stdin)
+existing = [x.strip() for x in (prefs.get('excluded_file_names','') or '').split('\n') if x.strip()]
+ours = set(os.environ['QB_DEFAULTS'].split() + os.environ['QB_EXTRAS'].split())
+remaining = [x for x in existing if x not in ours]
+# Disable the toggle entirely only if nothing user-authored is left.
+print(json.dumps({
+    'excluded_file_names_enabled': bool(remaining),
+    'excluded_file_names': '\n'.join(remaining),
+}))
+") || { echo "❌ Failed to build preferences payload"; return 1; }
+                    if _qbit_set_pref "$json" >/dev/null; then
+                        local remaining_count=0
+                        remaining_count=$(echo "$json" | python3 -c "import sys,json; n=json.load(sys.stdin)['excluded_file_names']; print(len([x for x in n.split('\n') if x.strip()]))" 2>/dev/null) || remaining_count=0
+                        echo "⚠️  qBittorrent malware hardening DISABLED (our patterns removed)"
+                        if [ "${remaining_count:-0}" -gt 0 ]; then
+                            echo "   $remaining_count user-configured exclusion(s) preserved."
+                        else
+                            echo "   No other exclusions configured; feature toggle turned off."
+                        fi
+                    else
+                        echo "❌ Failed to update qBittorrent preferences"
+                        return 1
+                    fi
+                    ;;
+                status)
+                    _qbit "app/preferences" | QB_DEFAULTS="$QBIT_HARDEN_DEFAULT" QB_EXTRAS="${QBIT_HARDEN_EXTRAS:-}" python3 -c "
+import sys, os, json
+p = json.load(sys.stdin)
+enabled = p.get('excluded_file_names_enabled', False)
+patterns = [x.strip() for x in (p.get('excluded_file_names','') or '').split('\n') if x.strip()]
+ours = set(os.environ['QB_DEFAULTS'].split() + os.environ['QB_EXTRAS'].split())
+hardening_active = enabled and ours.issubset(set(patterns))
+state = '✅ ENABLED' if hardening_active else '❌ DISABLED'
+print(f'Malware hardening: {state}')
+print(f'Toggle: excluded_file_names_enabled={enabled}')
+print(f'Total patterns: {len(patterns)}')
+ours_present = [p for p in patterns if p in ours]
+user_present = [p for p in patterns if p not in ours]
+if ours_present:
+    print(f'  Our patterns ({len(ours_present)}): {\" \".join(ours_present)}')
+if user_present:
+    print(f'  User patterns ({len(user_present)}): {\" \".join(user_present)}')
+" 2>/dev/null || { echo "❌ Could not read qBittorrent preferences"; return 1; }
+                    ;;
+                *)
+                    echo "Usage: media qbit harden [on|off|status]"
+                    return 1
+                    ;;
+            esac
+            ;;
+        ""|help)
+            cat <<EOF
+Usage: media qbit <subcommand>
+
+  harden on         Block malware extensions from extracting (recommended, default ON after setup)
+  harden off        Allow all file extensions
+  harden status     Show current hardening state + blocked extensions
+
+Override blocked list:
+  QBIT_HARDEN_EXTRAS="*.exe *.bat" media qbit harden on
+EOF
+            ;;
+        *)
+            echo "Unknown qbit subcommand: $subcmd"
+            echo "Run 'media qbit' for help."
+            return 1
+            ;;
+    esac
+}
+
 cmd_tdarr() {
     local tdarr_url="${TDARR_URL:-http://localhost:8265}"
     local subcmd="${1:-status}"; shift 2>/dev/null || true
 
     _tdarr_get() { _curl "${tdarr_url}/api/v2/$1" ""; }
-    _tdarr_post() { 
+    _tdarr_post() {
         if [[ "${MEDIA_HOST:-local}" == ssh:* ]]; then
             local host="${MEDIA_HOST#ssh:}"
             ssh "$host" "curl -sf --max-time 15 -X POST -H \"Content-Type: application/json\" -d \"{}\" \"${tdarr_url}/api/v2/$1\"" 2>/dev/null
         else
             curl -sf --max-time 15 -X POST -H "Content-Type: application/json" -d "{}" "${tdarr_url}/api/v2/$1" 2>/dev/null
         fi
+    }
+    # POST with arbitrary JSON body via stdin (avoids quoting hell over SSH)
+    _tdarr_post_json() {
+        local endpoint="$1"; local body="$2"
+        if [[ "${MEDIA_HOST:-local}" == ssh:* ]]; then
+            local host="${MEDIA_HOST#ssh:}"
+            ssh "$host" "curl -sf --max-time 15 -X POST -H 'Content-Type: application/json' --data-binary @- '${tdarr_url}/api/v2/$endpoint'" <<< "$body" 2>/dev/null
+        else
+            curl -sf --max-time 15 -X POST -H "Content-Type: application/json" --data-binary @- "${tdarr_url}/api/v2/$endpoint" <<< "$body" 2>/dev/null
+        fi
+    }
+    # Discover the first node ID — works for single-node setups (most people)
+    _tdarr_first_node() {
+        _tdarr_get "get-nodes" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+for nid, node in d.items():
+    if isinstance(node, dict) and 'workers' in node:
+        print(nid); break
+" 2>/dev/null
     }
 
     case "$subcmd" in
@@ -749,7 +942,101 @@ for k in ['LibrarySettingsJSONDB','FileJSONDB','StagedJSONDB','FlowsJSONDB']:
             cmd_tdarr workers
             ;;
 
+        queue)
+            echo "=== Tdarr Queue ==="
+            _tdarr_post "get-db-statuses" | python3 -c "
+import sys,json
+d = json.load(sys.stdin)
+files  = d.get('FileJSONDB',{})
+staged = d.get('StagedJSONDB',{})
+print(f'  Files indexed:  {files.get(\"totalCount\",0)}')
+print(f'  Staged (queue): {staged.get(\"totalCount\",0)}')
+act = staged.get('type','')
+if act: print(f'  Status: {act}')
+" 2>/dev/null
+            ;;
+
+        boost)
+            # `boost on`  = disable schedule, max GPU workers (default 3, override: TDARR_BOOST_GPU_WORKERS=N)
+            # `boost off` = re-enable schedule (restore time-based rotation)
+            # no arg     = show current boost state
+            local action="${1:-status}"
+            local nid; nid=$(_tdarr_first_node)
+            [ -z "$nid" ] && { echo "❌ No Tdarr nodes found at $tdarr_url"; return 1; }
+
+            case "$action" in
+                on)
+                    local n="${TDARR_BOOST_GPU_WORKERS:-3}"
+                    local body="{\"data\":{\"nodeID\":\"$nid\",\"nodeUpdates\":{\"scheduleEnabled\":false,\"workerLimits\":{\"transcodegpu\":$n}}}}"
+                    if _tdarr_post_json "update-node" "$body" >/dev/null; then
+                        echo "🚀 Tdarr boost ON — schedule disabled, $n GPU workers"
+                    else
+                        echo "❌ Failed to enable boost"; return 1
+                    fi
+                    ;;
+                off)
+                    local body="{\"data\":{\"nodeID\":\"$nid\",\"nodeUpdates\":{\"scheduleEnabled\":true}}}"
+                    if _tdarr_post_json "update-node" "$body" >/dev/null; then
+                        echo "✅ Tdarr boost OFF — schedule re-enabled"
+                    else
+                        echo "❌ Failed to disable boost"; return 1
+                    fi
+                    ;;
+                status|"")
+                    _tdarr_get "get-nodes" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+for nid, node in d.items():
+    if not isinstance(node, dict) or 'workers' not in node: continue
+    wl = node.get('workerLimits', {})
+    sched = node.get('scheduleEnabled', False)
+    mode = '🚀 BOOST (schedule off)' if not sched else '⏰ SCHEDULED'
+    print(f\"Node: {node.get('nodeName', nid)}  [{mode}]\")
+    print(f\"  GPU workers: {wl.get('transcodegpu','?')}  CPU workers: {wl.get('transcodecpu','?')}\")
+" 2>/dev/null
+                    ;;
+                *) echo "Usage: media tdarr boost [on|off|status]"; return 1 ;;
+            esac
+            ;;
+
+        schedule)
+            # `schedule on`  = enable time-based schedule
+            # `schedule off` = disable (static workerLimits take over)
+            local action="${1:-}"
+            local nid; nid=$(_tdarr_first_node)
+            [ -z "$nid" ] && { echo "❌ No Tdarr nodes found at $tdarr_url"; return 1; }
+
+            case "$action" in
+                on|enable)
+                    local body="{\"data\":{\"nodeID\":\"$nid\",\"nodeUpdates\":{\"scheduleEnabled\":true}}}"
+                    _tdarr_post_json "update-node" "$body" >/dev/null && echo "✅ Schedule enabled" || { echo "❌ Failed"; return 1; }
+                    ;;
+                off|disable)
+                    local body="{\"data\":{\"nodeID\":\"$nid\",\"nodeUpdates\":{\"scheduleEnabled\":false}}}"
+                    _tdarr_post_json "update-node" "$body" >/dev/null && echo "✅ Schedule disabled (static worker limits active)" || { echo "❌ Failed"; return 1; }
+                    ;;
+                *) echo "Usage: media tdarr schedule [on|off]"; return 1 ;;
+            esac
+            ;;
+
         workers)
+            # If no args → per-worker status (existing behavior).
+            # If `workers set <type> <n>` → update workerLimits[type] to n.
+            #   types: transcodegpu, transcodecpu, healthcheckgpu, healthcheckcpu
+            if [ "${1:-}" = "set" ]; then
+                local wtype="${2:-}"; local count="${3:-}"
+                case "$wtype" in
+                    transcodegpu|transcodecpu|healthcheckgpu|healthcheckcpu) ;;
+                    *) echo "Usage: media tdarr workers set <transcodegpu|transcodecpu|healthcheckgpu|healthcheckcpu> <n>"; return 1 ;;
+                esac
+                [[ "$count" =~ ^[0-9]+$ ]] || { echo "Worker count must be a non-negative integer"; return 1; }
+                local nid; nid=$(_tdarr_first_node)
+                [ -z "$nid" ] && { echo "❌ No Tdarr nodes found at $tdarr_url"; return 1; }
+                local body="{\"data\":{\"nodeID\":\"$nid\",\"nodeUpdates\":{\"workerLimits\":{\"$wtype\":$count}}}}"
+                _tdarr_post_json "update-node" "$body" >/dev/null && echo "✅ $wtype → $count" || { echo "❌ Failed to update"; return 1; }
+                return 0
+            fi
+
             echo "=== Tdarr Workers ==="
             _tdarr_get "get-nodes" | python3 -c "
 import sys,json
@@ -784,21 +1071,7 @@ print(f'\nTotal: {active} active / {total} workers')
 " 2>/dev/null
             ;;
 
-        queue)
-            echo "=== Tdarr Queue ==="
-            _tdarr_post "get-db-statuses" | python3 -c "
-import sys,json
-d = json.load(sys.stdin)
-files  = d.get('FileJSONDB',{})
-staged = d.get('StagedJSONDB',{})
-print(f'  Files indexed:  {files.get(\"totalCount\",0)}')
-print(f'  Staged (queue): {staged.get(\"totalCount\",0)}')
-act = staged.get('type','')
-if act: print(f'  Status: {act}')
-" 2>/dev/null
-            ;;
-
-        *) echo "Usage: media tdarr [status|workers|queue]" ;;
+        *) echo "Usage: media tdarr [status|workers|queue|boost|schedule]" ;;
     esac
 }
 
@@ -836,7 +1109,14 @@ REQUESTS (Jellyseerr):
 TRANSCODING (Tdarr):
   tdarr [status]           Server status, resources, active workers
   tdarr workers            Per-worker progress (file, %, fps, ETA, size savings)
+  tdarr workers set <type> <n>  Update workerLimits (transcodegpu/cpu, healthcheckgpu/cpu)
   tdarr queue              Items queued for processing
+  tdarr boost [on|off]     Toggle max GPU workers + disable schedule (off = restore schedule)
+  tdarr schedule [on|off]  Enable/disable Tdarr's time-based worker schedule
+
+SECURITY (qBittorrent):
+  qbit harden [on|off|status]   Block malware-style file extensions from extracting
+                                (ENABLED by default after 'media setup')
 
 REQUIREMENTS:
   bash, curl, python3, ssh (for remote mode)
@@ -868,5 +1148,6 @@ case "$cmd" in
     subs|subtitles)   cmd_subs "$@" ;;
     requests|req)     cmd_requests "$@" ;;
     tdarr|transcode)  cmd_tdarr "$@" ;;
+    qbit|qbittorrent) cmd_qbit "$@" ;;
     *)                echo "Unknown: $cmd"; cmd_help; exit 1 ;;
 esac

@@ -37,3 +37,7 @@ DEFAULT_MOVIE_QUALITY=4        # Quality profile ID (4 = HD-1080p typically)
 DEFAULT_SHOW_QUALITY=4
 DEFAULT_MOVIE_ROOT="/movies"   # Root folder path for new movies
 DEFAULT_SHOW_ROOT="/tv"        # Root folder path for new shows
+
+# Optional overrides
+# QBIT_HARDEN_EXTRAS="*.exe *.bat"      # Extra extensions to block (see `media qbit harden`)
+# TDARR_BOOST_GPU_WORKERS=3             # GPU worker count used by `media tdarr boost on`
