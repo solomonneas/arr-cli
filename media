@@ -10,6 +10,13 @@
 
 set -euo pipefail
 
+# Every `python3 -c` invocation in this script prints emoji status icons
+# (✅, ⏳, 🗑️, etc.). On Windows, Python 3 defaults to the cp1252 console
+# codec which can't encode most of those, so prints raise UnicodeEncodeError
+# and commands die silently (emoji errors go to stderr, which most call sites
+# suppress). Forcing UTF-8 makes the whole script work on both platforms.
+export PYTHONIOENCODING="${PYTHONIOENCODING:-utf-8}"
+
 # ── Config Loading ──────────────────────────────────────────────────────────
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/media-cli"
 CONFIG_FILE="$CONFIG_DIR/config"
@@ -1330,14 +1337,22 @@ cmd_audiobooks() {
 
     case "$subcmd" in
         list|ls)
-            _readarr "book" | python3 -c "
-import sys, json
-books = json.load(sys.stdin) or []
+            # Readarr's /book omits the author object; only authorId is present.
+            # We do one extra /author call and resolve names client-side.
+            # JSON is passed through env vars to avoid shell-quote breakage on
+            # titles containing apostrophes ("Annie's Day"), backslashes, etc.
+            local books_json authors_json
+            books_json=$(_readarr "book")
+            authors_json=$(_readarr "author")
+            ARRCLI_BOOKS="$books_json" ARRCLI_AUTHORS="$authors_json" python3 -c "
+import os, json
+books   = json.loads(os.environ.get('ARRCLI_BOOKS') or '[]')
+authors = json.loads(os.environ.get('ARRCLI_AUTHORS') or '[]')
+names = {a.get('id'): a.get('authorName','?') for a in authors}
 def sort_key(b):
-    a = (b.get('author') or {}).get('authorName','') or ''
-    return (a.lower(), (b.get('title','') or '').lower())
+    return (names.get(b.get('authorId'),'').lower(), (b.get('title','') or '').lower())
 for b in sorted(books, key=sort_key):
-    author = (b.get('author') or {}).get('authorName','?')
+    author = names.get(b.get('authorId'), '?')
     title  = b.get('title','?')
     stats  = b.get('statistics',{}) or {}
     has_file = (stats.get('bookFileCount',0) or 0) > 0
@@ -1356,7 +1371,9 @@ print(f'\nTotal: {len(books)} books')
 import sys, json
 results = (json.load(sys.stdin) or [])[:10]
 for r in results:
-    author = (r.get('author') or {}).get('authorName','?')
+    # Different metadata backends return author differently:
+    # bookinfo.club used r.author.authorName; bookinfo.pro returns r.authorTitle.
+    author = (r.get('author') or {}).get('authorName') or r.get('authorTitle') or '?'
     title  = r.get('title','?')
     year   = (r.get('releaseDate') or '')[:4] or '?'
     gr     = r.get('foreignBookId','?')
@@ -1367,49 +1384,93 @@ if not results: print('No results found.')
             ;;
 
         add)
+            # Two-step lookup because bookinfo.pro (Readarr's metadata replacement)
+            # returns book results without an embedded author object and without
+            # a populated editions array. We synthesize an edition from the book
+            # fields and pair it with a separate author lookup.
             local query="$*"
             [ -z "$query" ] && { echo "Usage: media audiobooks add <title or author>"; return 1; }
             local eq
             eq=$(python3 -c "import urllib.parse, sys; print(urllib.parse.quote(sys.argv[1]))" "$query")
-            local lookup payload
-            lookup=$(_readarr "book/lookup?term=$eq")
-            payload=$(echo "$lookup" | python3 -c "
-import sys, json, os
-results = json.load(sys.stdin) or []
-if not results:
-    print('ERROR:No results found'); sys.exit(0)
-r = results[0]
-if r.get('id'):
-    print(f'EXISTING:{r.get(\"title\",\"?\")} (already in library)'); sys.exit(0)
+            local book_lookup; book_lookup=$(_readarr "book/lookup?term=$eq")
+            local author_term
+            author_term=$(echo "$book_lookup" | python3 -c "
+import sys, json
+r = json.load(sys.stdin) or []
+if not r: sys.exit(0)
+b = r[0]
+at = (b.get('authorTitle') or '').strip()
+title = (b.get('title') or '').strip()
+# bookinfo.pro returns 'lastname, firstname <title>'. Strip the trailing
+# title and flip the comma to get a clean 'firstname lastname' term.
+if title and at.lower().endswith(title.lower()):
+    at = at[:-len(title)].strip()
+if ',' in at:
+    last, first = [p.strip() for p in at.split(',', 1)]
+    at = f'{first} {last}'.strip()
+print(at)
+" 2>/dev/null)
+            if [ -z "$author_term" ]; then
+                echo "❌ Could not derive author from book lookup. Try a more specific term."
+                return 1
+            fi
+            local author_eq
+            author_eq=$(python3 -c "import urllib.parse, sys; print(urllib.parse.quote(sys.argv[1]))" "$author_term")
+            local author_lookup; author_lookup=$(_readarr "author/lookup?term=$author_eq")
 
-qp = int(os.environ.get('ARRCLI_QP','2'))
-mp = int(os.environ.get('ARRCLI_MP','1'))
+            local payload
+            payload=$(ARRCLI_BOOKS="$book_lookup" ARRCLI_AUTHORS="$author_lookup" python3 -c "
+import sys, json, os
+books   = json.loads(os.environ.get('ARRCLI_BOOKS') or '[]')
+authors = json.loads(os.environ.get('ARRCLI_AUTHORS') or '[]')
+if not books:
+    print('ERROR:No book results'); sys.exit(0)
+b = books[0]
+if b.get('id'):
+    print(f'EXISTING:{b.get(\"title\",\"?\")} (already in library)'); sys.exit(0)
+if not authors:
+    print('ERROR:Book found but author lookup returned nothing'); sys.exit(0)
+a = authors[0]
+
+qp   = int(os.environ.get('ARRCLI_QP','2'))
+mp   = int(os.environ.get('ARRCLI_MP','1'))
 root = os.environ.get('ARRCLI_ROOT','')
 
-author = r.get('author') or {}
+edition = {
+    'foreignEditionId': b.get('foreignEditionId',''),
+    'title':            b.get('title',''),
+    'titleSlug':        b.get('titleSlug',''),
+    'releaseDate':      b.get('releaseDate',''),
+    'images':           b.get('images',[]),
+    'monitored':        True,
+    'manualAdd':        False,
+    'isEbook':          False,
+    'disambiguation':   b.get('disambiguation',''),
+    'pageCount':        b.get('pageCount',0),
+}
 author_payload = {
-    'authorName':       author.get('authorName','?'),
-    'foreignAuthorId':  author.get('foreignAuthorId',''),
-    'titleSlug':        author.get('titleSlug',''),
+    'authorName':       a.get('authorName',''),
+    'foreignAuthorId':  a.get('foreignAuthorId',''),
+    'titleSlug':        a.get('titleSlug',''),
     'qualityProfileId': qp,
     'metadataProfileId':mp,
     'rootFolderPath':   root,
     'monitored':        True,
     'monitorNewItems':  'all',
-    'addOptions':       {'monitor':'all','searchForMissingBooks': True},
-    'images':           author.get('images',[]),
-    'links':            author.get('links',[]),
+    'addOptions':       {'monitor':'all','searchForMissingBooks': False},
+    'images':           a.get('images',[]),
+    'links':            a.get('links',[]),
 }
 book_payload = {
-    'title':          r.get('title','?'),
-    'foreignBookId':  r.get('foreignBookId',''),
-    'titleSlug':      r.get('titleSlug',''),
-    'editions':       r.get('editions',[]),
-    'images':         r.get('images',[]),
-    'releaseDate':    r.get('releaseDate',''),
-    'monitored':      True,
-    'author':         author_payload,
-    'addOptions':     {'searchForNewBook': True},
+    'title':         b.get('title',''),
+    'foreignBookId': b.get('foreignBookId',''),
+    'titleSlug':     b.get('titleSlug',''),
+    'editions':      [edition],
+    'images':        b.get('images',[]),
+    'releaseDate':   b.get('releaseDate',''),
+    'monitored':     True,
+    'author':        author_payload,
+    'addOptions':    {'searchForNewBook': True},
 }
 print('ADD:' + json.dumps(book_payload))
 " ARRCLI_QP="${DEFAULT_AUDIOBOOK_QUALITY:-2}" \
@@ -1420,32 +1481,48 @@ print('ADD:' + json.dumps(book_payload))
                 EXISTING:*) echo "${payload#EXISTING:}" ;;
                 ADD:*)
                     local json_data="${payload#ADD:}"
-                    _curl_post "${READARR_URL}/api/v1/book" "$json_data" "$READARR_KEY" | python3 -c "
+                    local post_resp
+                    post_resp=$(_curl_post "${READARR_URL}/api/v1/book" "$json_data" "$READARR_KEY")
+                    if [ -z "$post_resp" ]; then
+                        echo "❌ Add failed: no response from Readarr. Check the log at C:\\ProgramData\\Readarr\\logs\\readarr.txt"
+                        return 1
+                    fi
+                    echo "$post_resp" | python3 -c "
 import sys, json
 try:
     r = json.load(sys.stdin)
+    if not isinstance(r, dict) or not r.get('id'):
+        msg = (r.get('message') if isinstance(r, dict) else None) or 'unknown error'
+        print(f'❌ Add failed: {msg}')
+        sys.exit(1)
     author = (r.get('author') or {}).get('authorName','?')
     print(f'✅ Added: {author} - {r.get(\"title\",\"?\")} - Searching for downloads...')
-except Exception:
-    print('✅ Added book - searching for downloads...')
+except json.JSONDecodeError:
+    print('❌ Add failed: non-JSON response from Readarr')
+    sys.exit(1)
 " 2>/dev/null
                     ;;
             esac
             ;;
 
         missing)
-            _readarr "book" | python3 -c "
-import sys, json
-books = json.load(sys.stdin) or []
+            local books_json authors_json
+            books_json=$(_readarr "book")
+            authors_json=$(_readarr "author")
+            ARRCLI_BOOKS="$books_json" ARRCLI_AUTHORS="$authors_json" python3 -c "
+import os, json
+books   = json.loads(os.environ.get('ARRCLI_BOOKS') or '[]')
+authors = json.loads(os.environ.get('ARRCLI_AUTHORS') or '[]')
+names = {a.get('id'): a.get('authorName','?') for a in authors}
 missing = []
 for b in books:
     if not b.get('monitored'): continue
     stats = b.get('statistics',{}) or {}
     if (stats.get('bookFileCount',0) or 0) > 0: continue
     missing.append(b)
-missing.sort(key=lambda b: ((b.get('author') or {}).get('authorName','').lower(), b.get('title','').lower()))
+missing.sort(key=lambda b: (names.get(b.get('authorId'),'').lower(), (b.get('title','') or '').lower()))
 for b in missing:
-    author = (b.get('author') or {}).get('authorName','?')
+    author = names.get(b.get('authorId'), '?')
     print(f'⏳ {author} - {b.get(\"title\",\"?\")}')
 print(f'\nMissing: {len(missing)} / {len(books)} total')
 " 2>/dev/null
