@@ -3,3 +3,4 @@ config
 *.swo
 *~
 .DS_Store
+.claude/
