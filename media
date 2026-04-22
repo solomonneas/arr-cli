@@ -1695,9 +1695,10 @@ cmd_hunt() {
                 echo "   If the previous run crashed, remove the lock manually."
                 return 0
             fi
-            # Trap is double-quoted so $lock_dir expands at trap-set time — by
+            # Trap is double-quoted so $lock_dir expands at trap-set time - by
             # the time EXIT fires, `local lock_dir` is out of scope and `set -u`
             # would blow up on deferred expansion.
+            # shellcheck disable=SC2064
             trap "rmdir \"$lock_dir\" 2>/dev/null" EXIT
             local any=0
             for app in $apps; do
