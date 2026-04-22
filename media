@@ -119,6 +119,16 @@ _lidarr() {
     _curl "${LIDARR_URL}/api/v1/$endpoint" "-H \"X-Api-Key: $LIDARR_KEY\"" "$@"
 }
 
+# Mylar3 (comics). Pre-servarr API shape: auth is a ?apikey= query param, not
+# an X-Api-Key header, and every command is dispatched as ?cmd=name. Callers
+# pass any extra params already URL-encoded and prefixed with '&', e.g.
+#   _mylar "findComic" "&name=Saga"
+_mylar() {
+    local cmd="$1"; shift
+    local extra="${*:-}"
+    _curl "${MYLAR_URL}/api?apikey=${MYLAR_KEY}&cmd=${cmd}${extra}" ""
+}
+
 # Run the local (or remote) recyclarr binary with the given args. Output
 # streams straight back. Caller supplies any -c/--config flag explicitly;
 # cmd_recyclarr injects RECYCLARR_CONFIG for sync/list/delete (the
@@ -781,6 +791,161 @@ EOF
         *)
             echo "Unknown music subcommand: $subcmd"
             echo "Run 'media music help' for usage."
+            return 1
+            ;;
+    esac
+}
+
+# Mylar3 wrapper. Response shapes are intentionally inconsistent upstream:
+#   getIndex   -> {success, data:[...]}
+#   findComic  -> bare JSON array (no success envelope)
+#   getWanted  -> {issues:[...]}  (no success key)
+#   addComic / delComic -> {success, data/error}
+# The parsers below handle each case explicitly rather than assuming a
+# uniform envelope.
+cmd_comics() {
+    local subcmd="${1:-list}"; shift 2>/dev/null || true
+    if [ -z "${MYLAR_URL:-}" ] || [ -z "${MYLAR_KEY:-}" ]; then
+        echo "❌ MYLAR_URL / MYLAR_KEY not configured. Run 'media setup' or edit the config."
+        return 1
+    fi
+
+    case "$subcmd" in
+        list|ls)
+            _mylar "getIndex" | python3 -c "
+import sys, json
+try: r = json.load(sys.stdin)
+except json.JSONDecodeError: print('❌ Non-JSON response from Mylar3'); sys.exit(1)
+if not r.get('success'):
+    print('❌ API error:', r.get('error')); sys.exit(1)
+comics = sorted(r.get('data') or [], key=lambda c: (c.get('name','') or '').lower())
+for c in comics:
+    status = c.get('status','?')
+    icon = '✅' if status == 'Active' else ('⏸️ ' if status == 'Paused' else '⏳')
+    name = c.get('name','?')
+    year = c.get('year','')
+    total = c.get('total','?')
+    have  = c.get('haveIssues','?')
+    print(f'{icon} {name} ({year})  [{have}/{total} issues]')
+print(f'\nTotal: {len(comics)} series')
+" 2>/dev/null
+            ;;
+
+        search)
+            local query="$*"
+            [ -z "$query" ] && { echo "Usage: media comics search <name>"; return 1; }
+            local eq
+            eq=$(python3 -c "import urllib.parse, sys; print(urllib.parse.quote(sys.argv[1]))" "$query")
+            # findComic returns a bare array; no success envelope
+            _mylar "findComic" "&name=$eq" | python3 -c "
+import sys, json
+try: data = json.load(sys.stdin)
+except json.JSONDecodeError: print('❌ Non-JSON response from Mylar3 (ComicVine may be rate-limited or unreachable)'); sys.exit(1)
+results = (data if isinstance(data, list) else [])[:10]
+for r in results:
+    cvid = r.get('comicid','?')
+    name = r.get('name','?')
+    year = r.get('comicyear','?')
+    pub  = r.get('publisher','?')
+    iss  = r.get('issues','?')
+    mark = '✅' if r.get('haveit') == 'Yes' else '  '
+    print(f'{mark} [CV:{cvid}] {name} ({year}) - {pub} [{iss} iss]')
+if not results: print('No results found.')
+" 2>/dev/null
+            ;;
+
+        add)
+            local id="${1:-}"
+            [ -z "$id" ] && { echo "Usage: media comics add <comicvine_id>"; echo "Run 'media comics search <name>' first to get the ID."; return 1; }
+            # Accept either bare numeric id (e.g. 107059) or CV's '4050-107059' prefixed form
+            id="${id#4050-}"
+            # ARRCLI_CVID must be set on the python3 side of the pipe; setting
+            # it on _mylar only exports it to _mylar's own subshell.
+            _mylar "addComic" "&id=$id" | ARRCLI_CVID="$id" python3 -c "
+import os, sys, json
+cvid = os.environ.get('ARRCLI_CVID','?')
+try: r = json.load(sys.stdin)
+except json.JSONDecodeError: print('❌ Non-JSON response from Mylar3'); sys.exit(1)
+if r.get('success'):
+    msg = r.get('data') or 'queued'
+    print(f'✅ CV:{cvid} - {msg}')
+else:
+    print('❌ Add failed:', r.get('error')); sys.exit(1)
+" 2>/dev/null
+            ;;
+
+        missing)
+            # getWanted returns {issues:[...]} with no success envelope.
+            _mylar "getWanted" | python3 -c "
+import sys, json
+try: r = json.load(sys.stdin)
+except json.JSONDecodeError: print('❌ Non-JSON response from Mylar3'); sys.exit(1)
+issues = r.get('issues', []) if isinstance(r, dict) else []
+issues.sort(key=lambda i: ((i.get('ComicName','') or '').lower(), i.get('IssueDate','') or ''))
+for i in issues:
+    comic = i.get('ComicName','?')
+    num   = i.get('Issue_Number','?')
+    date  = i.get('IssueDate','')
+    print(f'⏳ {comic} #{num}  ({date})')
+print(f'\nMissing: {len(issues)} issues')
+" 2>/dev/null
+            ;;
+
+        remove|rm)
+            local query="$*"
+            [ -z "$query" ] && { echo "Usage: media comics remove <name>"; return 1; }
+            # Query goes through an env var to survive apostrophes and other
+            # characters that would break triple-quoted string embedding.
+            _mylar "getIndex" | ARRCLI_QUERY="$query" python3 -c "
+import os, sys, json
+query = os.environ.get('ARRCLI_QUERY','').lower()
+try: r = json.load(sys.stdin)
+except json.JSONDecodeError: print('ERROR:Non-JSON response from Mylar3'); sys.exit(0)
+if not r.get('success'): print('ERROR:API error:', r.get('error')); sys.exit(0)
+hits = [c for c in (r.get('data') or []) if query in (c.get('name','') or '').lower()]
+if not hits: print('ERROR:No match'); sys.exit(0)
+if len(hits) > 1:
+    for c in hits: print(f'MULTI:{c.get(\"id\",\"?\")}: {c.get(\"name\",\"?\")}')
+else:
+    c = hits[0]
+    print(f'REMOVE:{c.get(\"id\",\"?\")}:{c.get(\"name\",\"?\")}')
+" 2>/dev/null | while IFS= read -r line; do
+                case "$line" in
+                    ERROR:*) echo "${line#ERROR:}" ;;
+                    MULTI:*) echo "Multiple matches: ${line#MULTI:}" ;;
+                    REMOVE:*)
+                        local id="${line#REMOVE:}"; id="${id%%:*}"
+                        local name="${line#*:*:}"
+                        _mylar "delComic" "&id=$id&directory=false" >/dev/null
+                        echo "🗑️ Removed: $name (files kept)"
+                        ;;
+                esac
+            done
+            ;;
+
+        help|--help|-h)
+            cat <<'EOF'
+Usage: media comics <subcommand>
+
+  list                     List all watched comic series (issue counts, status)
+  search <name>            Online search (ComicVine via Mylar3)
+  add <comicvine_id>       Add a comic by ComicVine ID
+                           Tip: run 'media comics search <name>' first to find the ID
+  missing                  Wanted / missing issues across all series
+  remove <name>            Remove a comic by name substring (keeps files)
+
+Config:
+  MYLAR_URL, MYLAR_KEY           Mylar3 instance (query-param auth, not X-Api-Key)
+  DEFAULT_COMIC_ROOT             Default comic library root (reference only;
+                                 Mylar3 owns file placement via its config.ini)
+  COMICVINE_API_KEY              ComicVine key; set inside Mylar3 config.ini,
+                                 not used directly by this CLI
+EOF
+            ;;
+
+        *)
+            echo "Unknown comics subcommand: $subcmd"
+            echo "Run 'media comics help' for usage."
             return 1
             ;;
     esac
@@ -2285,6 +2450,7 @@ LIBRARY:
   audiobooks list|search|add|remove|missing  (Readarr 8787, Spoken profile)
   ebooks     list|search|add|remove|missing  (Readarr 8788, eBook profile)
   music      list|search|add|remove|missing  (Lidarr 8686, artist-first)
+  comics     list|search|add|remove|missing  (Mylar3 8090, ComicVine-backed)
 
 HUNT (Huntarr replacement):
   hunt [run|status|missing|config]  Rate-limited missing-item searches
@@ -2360,6 +2526,7 @@ case "$cmd" in
     audiobooks|books) cmd_audiobooks "$@" ;;
     ebooks|ebook)     cmd_ebooks "$@" ;;
     music|artists)    cmd_music "$@" ;;
+    comics|comic)     cmd_comics "$@" ;;
     hunt)             cmd_hunt "$@" ;;
     downloads|dl)     cmd_downloads "$@" ;;
     queue)            cmd_queue "$@" ;;

@@ -66,6 +66,16 @@ TDARR_URL="http://localhost:8265"
 # DEFAULT_MUSIC_QUALITY=1         # "Any" profile id (Lossless=2, Standard=3)
 # DEFAULT_MUSIC_METADATA=1        # "Standard" metadata profile id
 
+# Mylar3 (comics). Port 8090. ComicVine-backed metadata. Not servarr-shaped:
+# auth is a ?apikey= query param, not an X-Api-Key header. COMICVINE_API_KEY
+# is set inside Mylar3's own config.ini (comicvine_api = ...) rather than
+# consumed directly by this CLI — it lives here only as a reference so the
+# key is discoverable during setup.
+# MYLAR_URL="http://localhost:8090"
+# MYLAR_KEY=""
+# DEFAULT_COMIC_ROOT="H:\\Comics"
+# COMICVINE_API_KEY=""
+
 # Hunt (Huntarr replacement). Fires targeted missing-item search commands
 # on a rate-limited cadence. Huntarr upstream was taken down 2026-02 over
 # unpatched security issues; this reimplementation stays inside the *arr
