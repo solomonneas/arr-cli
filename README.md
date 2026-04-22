@@ -365,6 +365,33 @@ arr-cli doesn't automate these two — they're host-OS-specific and the right pa
 
 **Preserves your existing exclusions.** `harden on` merges our patterns into whatever `excluded_file_names` list qBittorrent already has; your custom exclusions survive. `harden off` removes *only* our patterns, leaving yours intact. The feature toggle flips off only if nothing user-authored remains.
 
+## Hiding Console Popups (Windows)
+
+Most *arr services shipped as Windows scheduled tasks pop a console window on boot or on every scheduled run, because Task Scheduler launches them in the user's interactive session. PowerShell's `-WindowStyle Hidden` still flashes briefly; the only truly flash-free path is to route the action through `wscript.exe`, which is a GUI-subsystem binary and never opens a console.
+
+arr-cli ships `assets/launch-hidden.vbs` and `scripts/hide-task-popups.ps1` for this. The VBS re-emits the target command line with `WshShell.Run showStyle=0` (SW_HIDE), and the retrofit script rewrites existing scheduled tasks to invoke the VBS instead of the target exe directly.
+
+```powershell
+# Dry-run the curated default set (all *arr + common support services)
+powershell.exe -ExecutionPolicy Bypass -File scripts\hide-task-popups.ps1 -All -DryRun
+
+# Apply for real (needs Administrator; most *arr task files are Admin-owned)
+powershell.exe -ExecutionPolicy Bypass -File scripts\hide-task-popups.ps1 -All
+
+# Target specific tasks
+powershell.exe -ExecutionPolicy Bypass -File scripts\hide-task-popups.ps1 -TaskName Sonarr,Radarr,Bazarr
+
+# Revert a task to its original action
+powershell.exe -ExecutionPolicy Bypass -File scripts\hide-task-popups.ps1 -TaskName Sonarr -Unwrap
+```
+
+The script is idempotent. Before modifying a task it exports the current XML to `$env:LOCALAPPDATA\arr-cli\task-backups-<timestamp>\` so manual rollback via `schtasks /create /xml` is always available. Tasks already invoking their own VBS wrapper are detected and skipped rather than double-wrapped.
+
+**Known exceptions:**
+
+- **Password-logon tasks** (e.g. FlareSolverr's `LogonType: Password`): `Set-ScheduledTask` re-authenticates the stored credential when the action changes, and fails with `ERROR_LOGON_FAILURE` if the password is no longer valid. These tasks must be unwrapped by hand (or re-registered with a fresh credential) - skip them with `-TaskName` if you hit this.
+- **Hidden background state:** after wrap, the target service runs as a grandchild of wscript rather than a direct child. Task Scheduler's "Stop the task" button will stop the wscript invoker (already exited), not the service. Stop the service directly (`Stop-Process`, systemd-on-Windows, etc.).
+
 ## License
 
 [MIT](LICENSE)
