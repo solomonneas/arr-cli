@@ -572,30 +572,64 @@ if not results: print('No results found.')
             local query="$*"
             [ -z "$query" ] && { echo "Usage: media movies add <title>"; return 1; }
             local eq
-            eq=$(python3 -c "import urllib.parse; print(urllib.parse.quote('''$query'''))")
-            local lookup payload
-            lookup=$(_radarr "movie/lookup?term=$eq")
-            payload=$(echo "$lookup" | python3 -c "
-import sys,json
-results = json.load(sys.stdin)
-if not results: print('ERROR:No results found'); sys.exit(1)
+            eq=$(python3 -c "import urllib.parse, sys; print(urllib.parse.quote(sys.argv[1]))" "$query")
+            local lookup roots payload
+            # Defang command sub failures so a transient curl error doesn't
+            # kill the script under `set -euo pipefail` before we can emit a
+            # clean message.
+            lookup=$(_radarr "movie/lookup?term=$eq") || lookup=""
+            roots=$(_radarr "rootfolder") || roots=""
+            payload=$(ARRCLI_LOOKUP="$lookup" ARRCLI_ROOTS="$roots" \
+                ARRCLI_QP="${DEFAULT_MOVIE_QUALITY}" ARRCLI_ROOT="${DEFAULT_MOVIE_ROOT}" \
+                python3 -c "
+import os, json
+results = json.loads(os.environ.get('ARRCLI_LOOKUP') or '[]')
+if not results: print('ERROR:No results found'); raise SystemExit
 r = results[0]
-if r.get('id'): print(f'EXISTING:{r[\"title\"]} ({r.get(\"year\",\"?\")}) already in library'); sys.exit(0)
-movie = {'title':r['title'],'qualityProfileId':${DEFAULT_MOVIE_QUALITY},'tmdbId':r['tmdbId'],
-    'titleSlug':r.get('titleSlug',''),'images':r.get('images',[]),'year':r.get('year',0),
-    'rootFolderPath':'${DEFAULT_MOVIE_ROOT}','monitored':True,'addOptions':{'searchForMovie':True}}
-print('ADD:'+json.dumps(movie))
+if r.get('id'):
+    print(f'EXISTING:{r.get(\"title\",\"?\")} ({r.get(\"year\",\"?\")}) already in library'); raise SystemExit
+root = os.environ.get('ARRCLI_ROOT','')
+roots = json.loads(os.environ.get('ARRCLI_ROOTS') or '[]')
+# Case-insensitive compare: Windows paths are case-insensitive and a Lin-
+# ux user with two same-name-different-case roots is a non-event. Trim
+# trailing slashes too, so 'D:\\Movies\\' matches 'D:\\Movies'.
+def norm(p): return (p or '').rstrip(r'\\/').lower()
+known_raw = [p.get('path','') for p in roots]
+known = [norm(p) for p in known_raw]
+if not roots:
+    print('ERROR:Could not fetch Radarr root folders (Radarr may be down)'); raise SystemExit
+if norm(root) not in known:
+    avail = ', '.join(known_raw) or '(none configured)'
+    print(f\"ERROR:DEFAULT_MOVIE_ROOT '{root}' is not in Radarr root folders. Available: {avail}\"); raise SystemExit
+movie = {
+    'title':           r.get('title',''),
+    'qualityProfileId':int(os.environ.get('ARRCLI_QP','1')),
+    'tmdbId':          r.get('tmdbId'),
+    'titleSlug':       r.get('titleSlug',''),
+    'images':          r.get('images',[]),
+    'year':            r.get('year',0),
+    'rootFolderPath':  root,
+    'monitored':       True,
+    'addOptions':      {'searchForMovie': True},
+}
+print('ADD:' + json.dumps(movie))
 " 2>/dev/null)
             case "$payload" in
-                ERROR:*) echo "${payload#ERROR:}"; return 1 ;;
+                ERROR:*) echo "❌ ${payload#ERROR:}"; return 1 ;;
                 EXISTING:*) echo "${payload#EXISTING:}" ;;
                 ADD:*)
                     local json_data="${payload#ADD:}"
                     _curl_post "${RADARR_URL}/api/v3/movie" "$json_data" "$RADARR_KEY" | python3 -c "
-import sys,json
-r = json.load(sys.stdin)
-print(f'✅ Added: {r[\"title\"]} ({r.get(\"year\",\"?\")}) - Searching for downloads...')
-" 2>/dev/null || echo "✅ Added movie - searching for downloads..."
+import sys, json
+try:
+    r = json.load(sys.stdin)
+    if not isinstance(r, dict) or not r.get('id'):
+        msg = (r.get('message') if isinstance(r, dict) else None) or 'no id returned (likely HTTP error)'
+        print(f'❌ Add failed: {msg}'); sys.exit(1)
+    print(f'✅ Added: {r.get(\"title\",\"?\")} ({r.get(\"year\",\"?\")}) - Searching for downloads...')
+except json.JSONDecodeError:
+    print('❌ Add failed: empty/non-JSON response from Radarr (check URL/key and that the root folder exists)'); sys.exit(1)
+" 2>/dev/null
                     ;;
             esac
             ;;
@@ -672,31 +706,66 @@ if not results: print('No results found.')
             local query="$*"
             [ -z "$query" ] && { echo "Usage: media shows add <title>"; return 1; }
             local eq
-            eq=$(python3 -c "import urllib.parse; print(urllib.parse.quote('''$query'''))")
-            local lookup payload
-            lookup=$(_sonarr "series/lookup?term=$eq")
-            payload=$(echo "$lookup" | python3 -c "
-import sys,json
-results = json.load(sys.stdin)
-if not results: print('ERROR:No results found'); sys.exit(1)
+            eq=$(python3 -c "import urllib.parse, sys; print(urllib.parse.quote(sys.argv[1]))" "$query")
+            local lookup roots payload
+            # Defang command sub failures so a transient curl error doesn't
+            # kill the script under `set -euo pipefail` before we can emit a
+            # clean message.
+            lookup=$(_sonarr "series/lookup?term=$eq") || lookup=""
+            roots=$(_sonarr "rootfolder") || roots=""
+            payload=$(ARRCLI_LOOKUP="$lookup" ARRCLI_ROOTS="$roots" \
+                ARRCLI_QP="${DEFAULT_SHOW_QUALITY}" ARRCLI_ROOT="${DEFAULT_SHOW_ROOT}" \
+                python3 -c "
+import os, json
+results = json.loads(os.environ.get('ARRCLI_LOOKUP') or '[]')
+if not results: print('ERROR:No results found'); raise SystemExit
 r = results[0]
-if r.get('id'): print(f'EXISTING:{r[\"title\"]} ({r.get(\"year\",\"?\")}) already in library'); sys.exit(0)
-show = {'title':r['title'],'qualityProfileId':${DEFAULT_SHOW_QUALITY},'tvdbId':r['tvdbId'],
-    'titleSlug':r.get('titleSlug',''),'images':r.get('images',[]),'seasons':r.get('seasons',[]),
-    'year':r.get('year',0),'rootFolderPath':'${DEFAULT_SHOW_ROOT}','seasonFolder':True,
-    'monitored':True,'addOptions':{'searchForMissingEpisodes':True}}
-print('ADD:'+json.dumps(show))
+if r.get('id'):
+    print(f'EXISTING:{r.get(\"title\",\"?\")} ({r.get(\"year\",\"?\")}) already in library'); raise SystemExit
+root = os.environ.get('ARRCLI_ROOT','')
+roots = json.loads(os.environ.get('ARRCLI_ROOTS') or '[]')
+# Case-insensitive compare: Windows paths are case-insensitive and a Lin-
+# ux user with two same-name-different-case roots is a non-event. Trim
+# trailing slashes too, so 'D:\\TV Shows\\' matches 'D:\\TV Shows'.
+def norm(p): return (p or '').rstrip(r'\\/').lower()
+known_raw = [p.get('path','') for p in roots]
+known = [norm(p) for p in known_raw]
+if not roots:
+    print('ERROR:Could not fetch Sonarr root folders (Sonarr may be down)'); raise SystemExit
+if norm(root) not in known:
+    avail = ', '.join(known_raw) or '(none configured)'
+    print(f\"ERROR:DEFAULT_SHOW_ROOT '{root}' is not in Sonarr root folders. Available: {avail}\"); raise SystemExit
+show = {
+    'title':           r.get('title',''),
+    'qualityProfileId':int(os.environ.get('ARRCLI_QP','1')),
+    'tvdbId':          r.get('tvdbId'),
+    'titleSlug':       r.get('titleSlug',''),
+    'images':          r.get('images',[]),
+    'seasons':         r.get('seasons',[]),
+    'year':            r.get('year',0),
+    'rootFolderPath':  root,
+    'seasonFolder':    True,
+    'monitored':       True,
+    'addOptions':      {'searchForMissingEpisodes': True},
+}
+print('ADD:' + json.dumps(show))
 " 2>/dev/null)
             case "$payload" in
-                ERROR:*) echo "${payload#ERROR:}"; return 1 ;;
+                ERROR:*) echo "❌ ${payload#ERROR:}"; return 1 ;;
                 EXISTING:*) echo "${payload#EXISTING:}" ;;
                 ADD:*)
                     local json_data="${payload#ADD:}"
                     _curl_post "${SONARR_URL}/api/v3/series" "$json_data" "$SONARR_KEY" | python3 -c "
-import sys,json
-r = json.load(sys.stdin)
-print(f'✅ Added: {r[\"title\"]} ({r.get(\"year\",\"?\")}) - Searching for episodes...')
-" 2>/dev/null || echo "✅ Added show - searching for episodes..."
+import sys, json
+try:
+    r = json.load(sys.stdin)
+    if not isinstance(r, dict) or not r.get('id'):
+        msg = (r.get('message') if isinstance(r, dict) else None) or 'no id returned (likely HTTP error)'
+        print(f'❌ Add failed: {msg}'); sys.exit(1)
+    print(f'✅ Added: {r.get(\"title\",\"?\")} ({r.get(\"year\",\"?\")}) - Searching for episodes...')
+except json.JSONDecodeError:
+    print('❌ Add failed: empty/non-JSON response from Sonarr (check URL/key and that the root folder exists)'); sys.exit(1)
+" 2>/dev/null
                     ;;
             esac
             ;;
