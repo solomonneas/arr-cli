@@ -114,6 +114,11 @@ _readarr_api() {
     _curl "${url}/api/v1/$endpoint" "-H \"X-Api-Key: $key\"" "$@"
 }
 
+_lidarr() {
+    local endpoint="$1"; shift
+    _curl "${LIDARR_URL}/api/v1/$endpoint" "-H \"X-Api-Key: $LIDARR_KEY\"" "$@"
+}
+
 # Run the local (or remote) recyclarr binary with the given args. Output
 # streams straight back. Caller supplies any -c/--config flag explicitly;
 # cmd_recyclarr injects RECYCLARR_CONFIG for sync/list/delete (the
@@ -603,6 +608,179 @@ else: print(f'REMOVE:{shows[0][\"id\"]}:{shows[0][\"title\"]} ({shows[0].get(\"y
             done
             ;;
         *) echo "Usage: media shows [list|search|add|remove]" ;;
+    esac
+}
+
+### Music (Lidarr) ###
+# Lidarr uses artist-first model; albums hang off artists. Search endpoint is
+# /api/v1/artist/lookup?term=<term> (artist-name) and list endpoint is /artist.
+cmd_music() {
+    local subcmd="${1:-list}"; shift 2>/dev/null || true
+    if [ -z "${LIDARR_URL:-}" ] || [ -z "${LIDARR_KEY:-}" ]; then
+        echo "❌ LIDARR_URL / LIDARR_KEY not configured. Run 'media setup' or edit the config."
+        return 1
+    fi
+
+    case "$subcmd" in
+        list|ls)
+            _lidarr "artist" | python3 -c "
+import sys, json
+artists = sorted(json.load(sys.stdin), key=lambda a: (a.get('sortName','') or a.get('artistName','')).lower())
+for a in artists:
+    stats = a.get('statistics', {}) or {}
+    total = stats.get('albumCount', 0) or 0
+    have  = stats.get('trackFileCount', 0) or 0
+    expected = stats.get('trackCount', 0) or 0
+    icon = '✅' if expected and have >= expected else '⏳'
+    name = a.get('artistName','?')
+    print(f'{icon} {name}  [{have}/{expected} tracks, {total} albums]')
+print(f'\nTotal: {len(artists)} artists')
+" 2>/dev/null
+            ;;
+
+        search)
+            local query="$*"
+            [ -z "$query" ] && { echo "Usage: media music search <artist>"; return 1; }
+            local eq
+            eq=$(python3 -c "import urllib.parse, sys; print(urllib.parse.quote(sys.argv[1]))" "$query")
+            _lidarr "artist/lookup?term=$eq" | python3 -c "
+import sys, json
+results = (json.load(sys.stdin) or [])[:10]
+for r in results:
+    name   = r.get('artistName','?')
+    mb     = r.get('foreignArtistId','?')
+    added  = '➕' if r.get('id') else ''
+    stats  = r.get('statistics',{}) or {}
+    total  = stats.get('albumCount', 0) or 0
+    print(f'{added} [{mb[:8]}] {name}  ({total} albums on record)')
+if not results: print('No results found.')
+" 2>/dev/null
+            ;;
+
+        add)
+            local query="$*"
+            [ -z "$query" ] && { echo "Usage: media music add <artist>"; return 1; }
+            local eq
+            eq=$(python3 -c "import urllib.parse, sys; print(urllib.parse.quote(sys.argv[1]))" "$query")
+            local lookup; lookup=$(_lidarr "artist/lookup?term=$eq")
+            local payload
+            payload=$(ARRCLI_LOOKUP="$lookup" python3 -c "
+import os, json
+results = json.loads(os.environ.get('ARRCLI_LOOKUP') or '[]')
+if not results:
+    print('ERROR:No artist results'); raise SystemExit
+r = results[0]
+if r.get('id'):
+    print(f'EXISTING:{r.get(\"artistName\",\"?\")} (already in library)'); raise SystemExit
+artist = {
+    'artistName':       r.get('artistName',''),
+    'foreignArtistId':  r.get('foreignArtistId',''),
+    'qualityProfileId': int(os.environ.get('ARRCLI_QP','1')),
+    'metadataProfileId':int(os.environ.get('ARRCLI_MP','1')),
+    'rootFolderPath':   os.environ.get('ARRCLI_ROOT',''),
+    'monitored':        True,
+    'monitorNewItems':  'all',
+    'addOptions':       {'monitor':'all','searchForMissingAlbums': True},
+    'images':           r.get('images',[]),
+    'links':            r.get('links',[]),
+}
+print('ADD:' + json.dumps(artist))
+" ARRCLI_QP="${DEFAULT_MUSIC_QUALITY:-1}" \
+  ARRCLI_MP="${DEFAULT_MUSIC_METADATA:-1}" \
+  ARRCLI_ROOT="${DEFAULT_MUSIC_ROOT:-}" 2>/dev/null)
+            case "$payload" in
+                ERROR:*) echo "${payload#ERROR:}"; return 1 ;;
+                EXISTING:*) echo "${payload#EXISTING:}" ;;
+                ADD:*)
+                    local json_data="${payload#ADD:}"
+                    _curl_post "${LIDARR_URL}/api/v1/artist" "$json_data" "$LIDARR_KEY" | python3 -c "
+import sys, json
+try:
+    r = json.load(sys.stdin)
+    if not isinstance(r, dict) or not r.get('id'):
+        msg = (r.get('message') if isinstance(r, dict) else None) or 'unknown error'
+        print(f'❌ Add failed: {msg}'); sys.exit(1)
+    print(f'✅ Added: {r.get(\"artistName\",\"?\")} - Searching for missing albums...')
+except json.JSONDecodeError:
+    print('❌ Add failed: non-JSON response from Lidarr'); sys.exit(1)
+" 2>/dev/null
+                    ;;
+            esac
+            ;;
+
+        missing)
+            # Missing = monitored albums whose expected tracks > owned tracks.
+            local albums artists
+            albums=$(_lidarr "album")
+            artists=$(_lidarr "artist")
+            ARRCLI_ALBUMS="$albums" ARRCLI_ARTISTS="$artists" python3 -c "
+import os, json
+albums  = json.loads(os.environ.get('ARRCLI_ALBUMS') or '[]')
+artists = json.loads(os.environ.get('ARRCLI_ARTISTS') or '[]')
+names = {a.get('id'): a.get('artistName','?') for a in artists}
+missing = []
+for al in albums:
+    if not al.get('monitored'): continue
+    st = al.get('statistics', {}) or {}
+    expected = st.get('trackCount', 0) or 0
+    have = st.get('trackFileCount', 0) or 0
+    if expected == 0 or have >= expected: continue
+    missing.append(al)
+missing.sort(key=lambda al: (names.get(al.get('artistId'),'').lower(), (al.get('title','') or '').lower()))
+for al in missing:
+    print(f'⏳ {names.get(al.get(\"artistId\"),\"?\")} - {al.get(\"title\",\"?\")}')
+print(f'\nMissing: {len(missing)} / {len(albums)} monitored albums')
+" 2>/dev/null
+            ;;
+
+        remove|rm)
+            local query="$*"
+            [ -z "$query" ] && { echo "Usage: media music remove <artist>"; return 1; }
+            _lidarr "artist" | python3 -c "
+import sys, json
+query = '''$query'''.lower()
+hits = [a for a in (json.load(sys.stdin) or []) if query in a.get('artistName','').lower()]
+if not hits: print('ERROR:No match'); sys.exit(0)
+if len(hits) > 1:
+    for a in hits: print(f'MULTI:{a[\"id\"]}: {a.get(\"artistName\",\"?\")}')
+else:
+    a = hits[0]
+    print(f'REMOVE:{a[\"id\"]}:{a.get(\"artistName\",\"?\")}')
+" 2>/dev/null | while IFS= read -r line; do
+                case "$line" in
+                    ERROR:*) echo "${line#ERROR:}" ;;
+                    MULTI:*) echo "Multiple matches: ${line#MULTI:}" ;;
+                    REMOVE:*)
+                        local id="${line#REMOVE:}"; id="${id%%:*}"; local name="${line#*:*:}"
+                        _curl "${LIDARR_URL}/api/v1/artist/$id?deleteFiles=false" "-X DELETE -H \"X-Api-Key: $LIDARR_KEY\"" >/dev/null
+                        echo "🗑️ Removed: $name (files kept)" ;;
+                esac
+            done
+            ;;
+
+        help|--help|-h)
+            cat <<'EOF'
+Usage: media music <subcommand>
+
+  list                    List all artists with track counts
+  search <artist>         Online search (via Lidarr artist lookup)
+  add <artist>            Add the top search hit (monitored, searches missing)
+  missing                 Monitored albums with missing tracks
+  remove <artist>         Remove an artist by name substring (keeps files)
+
+Config:
+  LIDARR_URL, LIDARR_KEY               Lidarr instance
+  DEFAULT_MUSIC_ROOT                   Root folder path for new artists
+  DEFAULT_MUSIC_QUALITY                Quality profile id (1 = Any)
+  DEFAULT_MUSIC_METADATA               Metadata profile id (1 = Standard)
+EOF
+            ;;
+
+        *)
+            echo "Unknown music subcommand: $subcmd"
+            echo "Run 'media music help' for usage."
+            return 1
+            ;;
     esac
 }
 
@@ -1820,6 +1998,7 @@ LIBRARY:
   shows  list|search|add|remove
   audiobooks list|search|add|remove|missing  (Readarr 8787, Spoken profile)
   ebooks     list|search|add|remove|missing  (Readarr 8788, eBook profile)
+  music      list|search|add|remove|missing  (Lidarr 8686, artist-first)
 
 DOWNLOADS:
   downloads [list|active|pause|resume|remove]
@@ -1891,6 +2070,7 @@ case "$cmd" in
     shows)            cmd_shows "$@" ;;
     audiobooks|books) cmd_audiobooks "$@" ;;
     ebooks|ebook)     cmd_ebooks "$@" ;;
+    music|artists)    cmd_music "$@" ;;
     downloads|dl)     cmd_downloads "$@" ;;
     queue)            cmd_queue "$@" ;;
     wanted)           cmd_wanted "$@" ;;

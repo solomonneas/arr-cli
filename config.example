@@ -59,6 +59,13 @@ TDARR_URL="http://localhost:8265"
 # DEFAULT_EBOOK_QUALITY=1         # "eBook" profile id
 # DEFAULT_EBOOK_METADATA=1        # "Standard" metadata profile id
 
+# Lidarr (music). Port 8686. Artist-first model using MusicBrainz metadata.
+# LIDARR_URL="http://localhost:8686"
+# LIDARR_KEY=""
+# DEFAULT_MUSIC_ROOT="I:\\Music"
+# DEFAULT_MUSIC_QUALITY=1         # "Any" profile id (Lossless=2, Standard=3)
+# DEFAULT_MUSIC_METADATA=1        # "Standard" metadata profile id
+
 # Defaults
 DEFAULT_MOVIE_QUALITY=4        # Quality profile ID (4 = HD-1080p typically)
 DEFAULT_SHOW_QUALITY=4
