@@ -998,38 +998,58 @@ cmd_autobrr() {
 
     case "$subcmd" in
         status)
+            # 5 serial curls; under set -euo pipefail any single failure
+            # would abort the whole CLI silently. Default each call to an
+            # empty string on failure so we can distinguish 'service down'
+            # from 'bad JSON' inside the Python parser.
             local cfg filters irc clients releases
-            cfg=$(_autobrr "config")
-            filters=$(_autobrr "filters")
-            irc=$(_autobrr "irc")
-            clients=$(_autobrr "download_clients")
-            releases=$(_autobrr "release?limit=1")
+            cfg=$(_autobrr "config")            || cfg=""
+            filters=$(_autobrr "filters")       || filters=""
+            irc=$(_autobrr "irc")               || irc=""
+            clients=$(_autobrr "download_clients") || clients=""
+            releases=$(_autobrr "release?limit=1") || releases=""
+            AUTOBRR_URL="$AUTOBRR_URL" \
             ARRCLI_CFG="$cfg" ARRCLI_FILTERS="$filters" ARRCLI_IRC="$irc" \
             ARRCLI_CLIENTS="$clients" ARRCLI_RELEASES="$releases" python3 -c "
-import os, json
+import os, sys, json
+MISSING = object()           # distinct sentinel for 'empty response'
+BAD     = object()           # distinct sentinel for 'parse failed'
 def parse(name):
     raw = os.environ.get('ARRCLI_' + name, '')
-    try: return json.loads(raw) if raw else None
-    except json.JSONDecodeError: return None
-cfg      = parse('CFG') or {}
-filters  = parse('FILTERS') or []
-irc      = parse('IRC') or []
-clients  = parse('CLIENTS') or []
-releases = parse('RELEASES') or {}
-version = cfg.get('version','?')
-print(f'Version:          Autobrr {version}')
-print(f'Host:             {cfg.get(\"host\",\"?\")}:{cfg.get(\"port\",\"?\")}')
-print(f'Filters:          {len(filters)} total, {sum(1 for f in filters if f.get(\"enabled\"))} enabled')
-print(f'Download clients: {len(clients)} total, {sum(1 for c in clients if c.get(\"enabled\"))} enabled')
-print(f'IRC networks:     {len(irc)}')
-if not irc:
+    if not raw: return MISSING
+    try: return json.loads(raw)
+    except json.JSONDecodeError: return BAD
+cfg      = parse('CFG')
+filters  = parse('FILTERS')
+irc      = parse('IRC')
+clients  = parse('CLIENTS')
+releases = parse('RELEASES')
+bad = [n for n,v in [('config',cfg),('filters',filters),('irc',irc),('download_clients',clients),('releases',releases)] if v is BAD]
+missing = [n for n,v in [('config',cfg),('filters',filters),('irc',irc),('download_clients',clients),('releases',releases)] if v is MISSING]
+if missing:
+    print(f'⚠️  Autobrr did not respond for: {\", \".join(missing)} (service may be down at {os.environ.get(\"AUTOBRR_URL\",\"?\")})')
+if bad:
+    print(f'⚠️  Malformed JSON from Autobrr for: {\", \".join(bad)}')
+    sys.exit(1)
+# Replace MISSING sentinels with empty fallbacks so the summary still prints
+def coalesce(v, default): return default if v in (MISSING, BAD) else v
+cfg_d      = coalesce(cfg, {})
+filters_l  = coalesce(filters, [])
+irc_l      = coalesce(irc, [])
+clients_l  = coalesce(clients, [])
+releases_d = coalesce(releases, {})
+print(f'Version:          Autobrr {cfg_d.get(\"version\",\"?\")}')
+print(f'Host:             {cfg_d.get(\"host\",\"?\")}:{cfg_d.get(\"port\",\"?\")}')
+print(f'Filters:          {len(filters_l)} total, {sum(1 for f in filters_l if f.get(\"enabled\"))} enabled')
+print(f'Download clients: {len(clients_l)} total, {sum(1 for c in clients_l if c.get(\"enabled\"))} enabled')
+print(f'IRC networks:     {len(irc_l)}')
+if not irc_l:
     print('                    (preinstall posture: 0 networks - add one via web UI)')
 else:
-    connected = sum(1 for n in irc if n.get('connected'))
-    print(f'                  {connected} connected')
-count = releases.get('count', 0) if isinstance(releases, dict) else 0
+    print(f'                  {sum(1 for n in irc_l if n.get(\"connected\"))} connected')
+count = releases_d.get('count', 0) if isinstance(releases_d, dict) else 0
 print(f'Releases seen:    {count}')
-" 2>/dev/null
+"
             ;;
 
         filters)
