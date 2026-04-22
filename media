@@ -823,10 +823,13 @@ for c in comics:
     status = c.get('status','?')
     icon = '✅' if status == 'Active' else ('⏸️ ' if status == 'Paused' else '⏳')
     name = c.get('name','?')
-    year = c.get('year','')
-    total = c.get('total','?')
-    have  = c.get('haveIssues','?')
-    print(f'{icon} {name} ({year})  [{have}/{total} issues]')
+    year = c.get('year','') or ''
+    # Mylar getIndex exposes only 'totalIssues' (maps to comics.Total). There
+    # is no per-series owned-count field in the API; computing one would
+    # require a getComic call per series, which is too expensive for 'list'.
+    total = c.get('totalIssues')
+    total_str = str(total) if total not in (None, '') else '?'
+    print(f'{icon} {name} ({year})  [{total_str} issues]')
 print(f'\nTotal: {len(comics)} series')
 " 2>/dev/null
             ;;
@@ -848,7 +851,9 @@ for r in results:
     year = r.get('comicyear','?')
     pub  = r.get('publisher','?')
     iss  = r.get('issues','?')
-    mark = '✅' if r.get('haveit') == 'Yes' else '  '
+    # Mylar's haveit is either literal 'No' or the watched series's ComicID
+    # (anything non-'No' means already-tracked), not the literal 'Yes'.
+    mark = '  ' if r.get('haveit') == 'No' else '✅'
     print(f'{mark} [CV:{cvid}] {name} ({year}) - {pub} [{iss} iss]')
 if not results: print('No results found.')
 " 2>/dev/null
@@ -875,19 +880,28 @@ else:
             ;;
 
         missing)
-            # getWanted returns {issues:[...]} with no success envelope.
+            # getWanted returns {issues:[...]} with no success envelope, and
+            # additionally includes an 'annuals' list when ANNUALS_ON is on
+            # in Mylar3 config. Merge both so annuals don't silently vanish.
             _mylar "getWanted" | python3 -c "
 import sys, json
 try: r = json.load(sys.stdin)
 except json.JSONDecodeError: print('❌ Non-JSON response from Mylar3'); sys.exit(1)
-issues = r.get('issues', []) if isinstance(r, dict) else []
-issues.sort(key=lambda i: ((i.get('ComicName','') or '').lower(), i.get('IssueDate','') or ''))
-for i in issues:
+if not isinstance(r, dict):
+    print('❌ Unexpected response shape from getWanted'); sys.exit(1)
+issues  = list(r.get('issues')  or [])
+annuals = list(r.get('annuals') or [])
+for a in annuals:
+    a['_annual'] = True
+combined = issues + annuals
+combined.sort(key=lambda i: ((i.get('ComicName','') or '').lower(), i.get('IssueDate','') or ''))
+for i in combined:
     comic = i.get('ComicName','?')
     num   = i.get('Issue_Number','?')
     date  = i.get('IssueDate','')
-    print(f'⏳ {comic} #{num}  ({date})')
-print(f'\nMissing: {len(issues)} issues')
+    tag   = ' [annual]' if i.get('_annual') else ''
+    print(f'⏳ {comic} #{num}{tag}  ({date})')
+print(f'\nMissing: {len(combined)} wanted ({len(issues)} issues + {len(annuals)} annuals)')
 " 2>/dev/null
             ;;
 
@@ -916,8 +930,22 @@ else:
                     REMOVE:*)
                         local id="${line#REMOVE:}"; id="${id%%:*}"
                         local name="${line#*:*:}"
-                        _mylar "delComic" "&id=$id&directory=false" >/dev/null
-                        echo "🗑️ Removed: $name (files kept)"
+                        # Don't claim success on a non-success delComic. Mylar
+                        # can return {success:false,...} on HTTP 200 (e.g. DB
+                        # contention or race with another request).
+                        local del_result
+                        del_result=$(_mylar "delComic" "&id=$id&directory=false")
+                        echo "$del_result" | ARRCLI_NAME="$name" python3 -c "
+import os, sys, json
+name = os.environ.get('ARRCLI_NAME','?')
+try: r = json.load(sys.stdin)
+except json.JSONDecodeError: print(f'❌ Delete failed: non-JSON response ({name!r})'); sys.exit(1)
+if r.get('success'):
+    print(f'🗑️  Removed: {name} (files kept)')
+else:
+    print(f'❌ Delete failed for {name!r}:', r.get('error'))
+    sys.exit(1)
+" 2>/dev/null
                         ;;
                 esac
             done
