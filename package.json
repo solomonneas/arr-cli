@@ -1,6 +1,6 @@
 {
   "name": "@solomonneas/media-cli",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "description": "Single-file bash CLI for the self-hosted media stack: Sonarr, Radarr, Readarr, Lidarr, Prowlarr, Mylar3, qBittorrent, Bazarr, Jellyseerr, Tdarr, Autobrr, cross-seed, Unpackerr, Recyclarr. Works locally or over SSH.",
   "bin": {
     "media": "media",
