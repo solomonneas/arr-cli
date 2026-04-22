@@ -507,9 +507,12 @@ print(f'✅ Added: {r[\"title\"]} ({r.get(\"year\",\"?\")}) - Searching for down
         remove)
             local query="$*"
             [ -z "$query" ] && { echo "Usage: media movies remove <title>"; return 1; }
-            _radarr "movie" | python3 -c "
-import sys,json
-query = '''$query'''.lower()
+            # Query goes through an env var to survive apostrophes ("It's A
+            # Wonderful Life") and to prevent shell interpolation of any
+            # $()/backticks from the user-supplied title.
+            _radarr "movie" | ARRCLI_QUERY="$query" python3 -c "
+import os, sys, json
+query = os.environ.get('ARRCLI_QUERY','').lower()
 movies = [m for m in json.load(sys.stdin) if query in m['title'].lower()]
 if not movies: print('ERROR:No match'); sys.exit(1)
 if len(movies) > 1:
@@ -605,9 +608,12 @@ print(f'✅ Added: {r[\"title\"]} ({r.get(\"year\",\"?\")}) - Searching for epis
         remove)
             local query="$*"
             [ -z "$query" ] && { echo "Usage: media shows remove <title>"; return 1; }
-            _sonarr "series" | python3 -c "
-import sys,json
-query = '''$query'''.lower()
+            # Query goes through an env var to survive apostrophes
+            # ("It's Always Sunny") and to prevent shell interpolation of
+            # any $()/backticks from the user-supplied title.
+            _sonarr "series" | ARRCLI_QUERY="$query" python3 -c "
+import os, sys, json
+query = os.environ.get('ARRCLI_QUERY','').lower()
 shows = [s for s in json.load(sys.stdin) if query in s['title'].lower()]
 if not shows: print('ERROR:No match'); sys.exit(1)
 if len(shows) > 1:
