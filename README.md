@@ -13,7 +13,7 @@
 
 <p align="center">
   <a href="https://github.com/solomonneas/media-cli/actions/workflows/ci.yml"><img src="https://github.com/solomonneas/media-cli/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <a href="https://www.npmjs.com/package/media-cli"><img src="https://img.shields.io/npm/v/media-cli.svg" alt="npm"></a>
+  <a href="https://www.npmjs.com/package/@solomonneas/media-cli"><img src="https://img.shields.io/npm/v/@solomonneas/media-cli.svg" alt="npm"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT License"></a>
   <img src="https://img.shields.io/badge/shell-bash-green.svg" alt="Bash">
 </p>
@@ -81,10 +81,10 @@ $ media downloads active
 **npm (recommended):**
 
 ```bash
-npm install -g media-cli
+npm install -g @solomonneas/media-cli
 ```
 
-Exposes both `media` and `media-cli` on your `PATH`.
+Exposes both `media` and `media-cli` on your `PATH`. The package is scoped because the unscoped `media-cli` name on npm is taken by an unrelated project.
 
 **One-liner (no npm):**
 
